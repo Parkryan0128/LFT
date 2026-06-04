@@ -1,6 +1,7 @@
 #include "udp_socket.h"
 
 #include <unistd.h>
+#include <sys/time.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -97,10 +98,55 @@ bool UDPSocket::send_to(const std::string& dest_addr, uint16_t dest_port,
 int UDPSocket::receive_from(uint8_t* buffer, size_t buffer_len,
                             std::string& src_addr, uint16_t& src_port) {
 
+    if (socket_fd < 0) {
+        return -1;
+    }
+
+    // Prepare sockaddr_in to receive source address and port information.
+    struct sockaddr_in src_sa;
+    // socklen_t is an unsigned integer type. we set it to size of sockaddr_in
+    socklen_t src_len = sizeof(src_sa);
+    // set values of src_sa to 0.
+    std::memset(&src_sa, 0, sizeof(src_sa));
+
+    // recvd is number of bytes received, or -1 on error. Data is stored in buffer, and source address/port is stored in src_sa.
+    ssize_t recvd = ::recvfrom(socket_fd, buffer, buffer_len, 0,
+                              reinterpret_cast<struct sockaddr*>(&src_sa), &src_len);
+    if (recvd < 0) {
+        return -1;
+    }
+
+    // Convert source address from binary to text form.
+    char addr_str[INET_ADDRSTRLEN];
+    if (::inet_ntop(AF_INET, &src_sa.sin_addr, addr_str, sizeof(addr_str)) == nullptr) {
+        return -1;
+    }
+
+    // Store source address and port in output parameters.
+    src_addr = addr_str;
+    src_port = ntohs(src_sa.sin_port);
+
+    // Return number of bytes received.
+    return static_cast<int>(recvd);
 }
 
+// wait only until given timeout for receiving data.
 bool UDPSocket::set_receive_timeout(int timeout_ms) {
+    if (socket_fd < 0) {
+        return false;
+    }
 
+    // process timeout_ms to timeval structure, which has seconds and microseconds. 
+    struct timeval tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+
+    // When we call recvfrom, it will wait until data is received or timeout occurs. if timeout occurs, recvfrom will return -1
+    if (::setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        return false;
+    }
+
+    return true;
 }
 
 void UDPSocket::close() {
