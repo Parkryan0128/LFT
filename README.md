@@ -1,130 +1,186 @@
-# Product Specification: High-Performance P2P UDP File Transfer Engine
+# LFT — LAN File Transfer
 
 ## Overview
-This project is a lightweight C++ application for fast, direct peer-to-peer file transfer using raw UDP. It is designed to move very large files without cloud storage, bypass TCP overhead, and keep data flowing directly between sender and receiver.
 
-## Goals
-* Transfer one file at a time in the first version.
-* Build a CLI-first engine, then add a GUI later.
-* Support Windows, macOS, and Linux first, with iOS and Android as long-term targets.
-* Use a custom UDP reliability layer to recover from packet loss and reordering.
-* Keep the core transfer engine separate from any UI.
+LFT is a C++ desktop application for **direct file transfer between devices on the same Wi‑Fi or local network**. There is no cloud upload, no account, and no internet dependency — files move straight from sender disk to receiver disk.
 
-## Value Proposition
-* **Maximum throughput:** Avoids TCP congestion and browser overhead for raw network performance.
-* **No cloud egress fees:** Pure P2P delivery means no intermediary storage or per-byte cloud billing.
-* **Direct transfer privacy:** Data moves from sender disk to receiver disk over a direct socket path.
+**v1 focus:** one file, one sender, one receiver, same LAN. Ship a working CLI and a minimal Qt GUI.
 
 ---
 
-## Scope and Assumptions
-* Initial implementation supports only a single file.
-* Command-line interface is the first user-facing layer.
-* Cross-platform portability is critical.
-* Security should be prepared for stronger protection beyond checksum validation.
-* STUN-based NAT traversal is required, but the rendezvous service is not yet finalized.
+## Goals
+
+* Transfer **one file at a time** between two peers on the same network.
+* Use **QUIC** for reliable, encrypted file transfer.
+* Use **mDNS (UDP)** for automatic peer discovery on the LAN.
+* Provide a **CLI** for scripting and testing, plus a **minimal Qt GUI** for everyday use.
+* Keep the **transfer engine separate** from CLI and GUI.
+* Verify file integrity with **SHA-256** after each transfer.
+
+## Value Proposition
+
+* **No cloud:** Files never leave the local network.
+* **Simple sharing:** Discover nearby devices automatically; send a large file without USB or Dropbox.
+* **Secure by default:** QUIC provides encrypted transport; SHA-256 confirms the received file matches the original.
+* **Honest scope:** Built for same-Wi‑Fi / LAN use — not a general internet P2P tool.
+
+---
+
+## v1 Scope
+
+### In scope
+
+| Feature | Details |
+| --- | --- |
+| **Transfer** | One file, 1 sender → 1 receiver |
+| **Network** | Same Wi‑Fi / LAN only (same subnet) |
+| **Transport** | QUIC (reliability + encryption) |
+| **Discovery** | mDNS / Bonjour (UDP) — peers appear by device name |
+| **Fallback** | Manual IP + port when discovery fails |
+| **UI** | CLI (`send` / `recv`) + minimal Qt GUI |
+| **Security UX** | Receiver **accepts or rejects** each incoming transfer |
+| **Integrity** | SHA-256 hash verified at end of transfer |
+| **Progress** | Byte progress and basic status in CLI and GUI |
+| **Platforms** | macOS and Linux first; Windows if feasible |
+
+### Out of scope (v1)
+
+* Internet transfer, NAT traversal, STUN, hole punching, relay servers
+* Folders, multiple files in one session, 1→many broadcast
+* Mobile apps (iOS / Android)
+* Resume / partial transfer recovery
+* Bandwidth throttling
+* Custom UDP reliability layer (superseded by QUIC)
 
 ---
 
 ## Architecture
-The engine uses a decoupled, multi-threaded design that separates disk I/O, networking, and user interaction.
 
-Sender flow:
+The application is split into three layers. CLI and GUI are thin clients over the same engine.
 
-  Disk Reader Thread → Thread-Safe Ring Buffer → UDP Network Thread
+```
+┌─────────────┐   ┌─────────────┐
+│   Qt GUI    │   │     CLI     │
+└──────┬──────┘   └──────┬──────┘
+       │                 │
+       └────────┬────────┘
+                ▼
+       ┌─────────────────┐
+       │ Transfer Engine │  ← QUIC file streams, chunked I/O, hashing
+       └────────┬────────┘
+                │
+       ┌────────┴────────┐
+       ▼                 ▼
+  QUIC (file data)   mDNS (discovery)
+  reliable +         UDP multicast /
+  encrypted          peer advertisement
+```
 
-Receiver flow:
+### Why this stack?
 
-  UDP Network Thread → Out-of-Order Reassembly Buffer → Disk Writer Thread
+| Layer | Protocol | Reason |
+| --- | --- | --- |
+| **File transfer** | QUIC | Reliable delivery, built-in TLS, modern congestion control |
+| **Discovery** | mDNS (UDP) | Standard LAN peer discovery; small messages where loss is fine |
+| **Manual connect** | QUIC over TCP-like connect to IP:port | Fallback when mDNS is blocked (guest/corporate Wi‑Fi) |
 
-UI updates are produced by a separate main thread that consumes state from the core engine.
+### Sender flow
+
+1. Discover peers via mDNS (or user enters IP manually).
+2. User selects a file and target device.
+3. Engine computes SHA-256 of the file.
+4. Sender opens QUIC connection, sends metadata (filename, size, hash), then file bytes in chunks.
+5. Receiver accepts or rejects the transfer request.
+6. Receiver verifies SHA-256 after download completes.
+
+### Receiver flow
+
+1. Advertise service via mDNS and listen for QUIC connections.
+2. On incoming request, show sender name, filename, and size → **Accept / Reject**.
+3. Stream incoming bytes to disk.
+4. Verify SHA-256 and report success or failure.
 
 ---
 
-## Network Topology
-1. **Control Phase:** Both peers briefly use a public STUN server to discover public-facing IP and NAT port mapping.
-2. **Hole Punching Phase:** Both clients send simultaneous outbound packets to establish NAT bindings.
-3. **Data Phase:** The STUN connection closes, and the peers exchange raw file data directly.
+## CLI (planned)
 
----
+```bash
+# Receiver — listen for incoming transfers
+lft recv --port 53317 --out ./downloads/
 
-## Protocol: UDP-RL (UDP Reliability Layer)
-This project uses a custom application-layer reliability protocol on top of UDP.
+# Sender — discover and send (GUI will wrap the same commands)
+lft send --to "Jiwon's-MacBook" --file ./video.mp4
 
-### Packet Format
-Each packet is a compact binary frame with a 24-byte header:
-
-| Offset | Type | Field | Purpose |
-| --- | --- | --- | --- |
-| 0–1 | `uint16_t` | `MagicNumber` | Protocol ID (`0x5032`) |
-| 2 | `uint8_t` | `PacketType` | `0x01`=Data, `0x02`=ACK, `0x03`=NACK, `0x04`=KeepAlive |
-| 3 | `uint8_t` | `Flags` | Bit flags (e.g. final packet) |
-| 4–11 | `uint64_t` | `SequenceNumber` | Packet ordering ID |
-| 12–19 | `uint64_t` | `ChunkID` | Logical file chunk index |
-| 20–23 | `uint32_t` | `Checksum` | CRC32 of payload |
-| 24+ | `uint8_t[]` | `Payload` | File segment data |
-
-### Reliability Behavior
-* **Selective Repeat ARQ:** The sender keeps a sliding window of outstanding packets.
-* **ACK / NACK:** The receiver acknowledges received packets and requests retransmission for missing ones.
-* **RTT-based retransmission:** Timeouts are computed dynamically and retransmissions are retried automatically.
-
----
-
-## Data Flow and Threading
-The application avoids blocking the main execution path and uses pre-allocated buffers where possible.
-
-### Sender Threads
-* **Disk Reader:** Reads the file sequentially in large blocks (e.g. 4 MB) and writes them into a ring buffer.
-* **Network Blaster:** Takes buffer data, segments it to MTU-safe packet sizes (around 1400 bytes), adds the UDP-RL header, and sends packets with non-blocking `sendto()` calls.
-
-### Receiver Threads
-* **Network Listener:** Receives UDP packets with non-blocking `recvfrom()`, verifies CRC32 checksums, and inserts valid payloads into a reassembly buffer.
-* **Disk Writer:** Detects contiguous received data, drains it in order, and writes it sequentially to disk.
+# Manual fallback when discovery does not work
+lft send --host 192.168.1.42 --port 53317 --file ./video.mp4
+```
 
 ---
 
 ## Technical Stack
-* **Language:** C++20 or newer.
-* **Sockets:** Native OS sockets only (`winsock2` on Windows, POSIX sockets on macOS/Linux).
-* **Concurrency:** `std::thread`, `std::mutex`, `std::condition_variable`, `std::atomic`.
-* **UI:** Decoupled from core engine; built later with Qt or Dear ImGui.
-* **Integrity:** A separate worker thread computes SHA-256 of the final received file and compares it to the sender hash.
+
+| Component | Choice |
+| --- | --- |
+| **Language** | C++20 |
+| **Transfer** | QUIC via [msquic](https://github.com/microsoft/msquic) (or similar) |
+| **Discovery** | mDNS / Bonjour (UDP) |
+| **GUI** | Qt 6 |
+| **Build** | CMake |
+| **Concurrency** | `std::thread` for disk I/O pipeline (optional in v1) |
+| **Integrity** | SHA-256 |
 
 ---
 
-## Development Checkpoints
-Each checkpoint is a stable milestone with a clear verification test.
+## Development Milestones
 
-### Checkpoint 1: Local UDP Proof of Concept
-* Build local loopback UDP messaging on `127.0.0.1`.
-* Test with at least 5 million sequential packets and no leaks or descriptor exhaustion.
+Each milestone should be demo-able before moving on.
 
-### Checkpoint 2: Custom Reliability Layer
-* Implement header parsing, sequence validation, ACK/NACK, and retransmit.
-* Verify with a simulated 15% packet drop scenario and confirm perfect reassembly.
+### Milestone 1: QUIC loopback transfer
+* Send one file over QUIC on `127.0.0.1`.
+* Verify byte-for-byte or SHA-256 match.
 
-### Checkpoint 3: Multi-threaded File Transfer Pipeline
-* Connect disk I/O and network flow using thread-safe buffers.
-* Transfer a 10 GB binary file and verify SHA-256 integrity with stable RAM usage.
+### Milestone 2: CLI send / recv on LAN
+* Two machines on same Wi‑Fi transfer a file via manual IP.
+* Accept/reject prompt on receiver.
 
-### Checkpoint 4: STUN / NAT Traversal
-* Add STUN-based public endpoint discovery and hole punching.
-* Validate with two firewalled networks and a direct handshake without manual port configuration.
+### Milestone 3: mDNS discovery
+* Receiver advertises; sender sees device list without typing IP.
+* Manual IP fallback still works.
 
-### Checkpoint 5: GUI and Bandwidth Control
-* Wrap the transfer engine in a UI layer.
-* Add a throttling control that limits sender output immediately.
+### Milestone 4: Minimal Qt GUI
+* Device list, file picker, send button, receive accept/reject, progress bar.
+
+### Milestone 5: Polish
+* README demo, error handling, large-file test (1 GB+), clean project structure.
 
 ---
 
-## Open Questions
-* Which level of data protection is required beyond CRC32? (encryption, authentication, replay protection)
-* How will peers discover each other? (rendezvous code, PIN, server-assisted exchange)
-* What is the first production target: desktop only, or desktop plus mobile simultaneously?
-* Should there be a fallback path for NAT traversal failures?
+## Definition of Done (v1)
+
+- [ ] Two laptops on the same Wi‑Fi discover each other via mDNS
+- [ ] Sender transfers one file; receiver accepts and saves it
+- [ ] SHA-256 hash matches on completion
+- [ ] Works via CLI and Qt GUI
+- [ ] Manual IP connect works when discovery fails
+- [ ] README documents architecture, limitations, and demo steps
+
+---
+
+## Current Status
+
+Early prototyping included a POSIX **UDP socket wrapper** and a **5M-packet loopback stress test** (Checkpoint 1). The project direction now uses **QUIC for file data** and **UDP only for discovery**. Legacy UDP code may remain in the repo during migration.
+
+---
+
+## Limitations (v1)
+
+* Requires both devices on the **same local network**.
+* Both devices must be **running LFT** (discovery and receive mode).
+* **Corporate or guest Wi‑Fi** may block device-to-device traffic or mDNS — use manual IP in those cases.
+* **One file per transfer** — zip folders manually if needed.
 
 ---
 
 ## Summary
-This project is a focused, high-performance peer-to-peer file transfer engine built around a custom UDP reliability protocol. Starting with CLI-based single-file transfer and desktop portability makes the first implementation tractable, while later GUI and mobile support remain achievable.
+
+LFT is a scoped LAN file-sharing tool: **QUIC for transfer, mDNS for discovery, Qt for a simple GUI, CLI for power users.** The goal is a finishable, demo-ready project — not a full LocalSend competitor or internet P2P engine.
