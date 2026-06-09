@@ -1,5 +1,7 @@
 #pragma once
 
+#include <msquic.h>
+
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -31,10 +33,24 @@ public:
                        int timeout_ms);
 
 private:
+    // Step 2: TLS + ALPN configuration (must succeed before ListenerOpen).
+    bool open_configuration();
+
     uint16_t port_;
+    std::string bind_host_;
     bool running_ = false;
 
-    // msquic handles (registration, configuration, listener) added in Step A.
+    // Step 1: API + registration.
+    const QUIC_API_TABLE* api_ = nullptr;
+    HQUIC registration_ = nullptr;
+
+    // Step 2: QUIC settings for this server (TLS cert + ALPN "lft").
+    HQUIC configuration_ = nullptr;
+    std::string alpn_ = "lft";
+    std::string cert_path_;
+    std::string key_path_;
+    QUIC_CERTIFICATE_FILE cert_files_{};
+    QUIC_CREDENTIAL_CONFIG cred_config_{};
 };
 
 }  // namespace lft
