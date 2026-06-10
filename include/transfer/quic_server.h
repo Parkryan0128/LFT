@@ -36,6 +36,22 @@ private:
     // Step 2: TLS + ALPN configuration (must succeed before ListenerOpen).
     bool open_configuration();
 
+    // Step 3: Bind UDP port and accept incoming QUIC connections.
+    bool open_listener();
+
+    QUIC_STATUS on_listener_event(HQUIC listener, QUIC_LISTENER_EVENT* event);
+    QUIC_STATUS on_connection_event(HQUIC connection, QUIC_CONNECTION_EVENT* event);
+
+    // msquic needs plain C function pointers; these static wrappers forward to
+    // the methods above. `context` is the QuicServer* passed to ListenerOpen.
+    static QUIC_STATUS listener_callback(HQUIC listener,
+                                         void* context,
+                                         QUIC_LISTENER_EVENT* event);
+
+    static QUIC_STATUS connection_callback(HQUIC connection,
+                                           void* context,
+                                           QUIC_CONNECTION_EVENT* event);
+
     uint16_t port_;
     std::string bind_host_;
     bool running_ = false;
@@ -51,6 +67,10 @@ private:
     std::string key_path_;
     QUIC_CERTIFICATE_FILE cert_files_{};
     QUIC_CREDENTIAL_CONFIG cred_config_{};
+
+    // Step 3: UDP/QUIC listener on bind_host_:port_. Fires listener_callback
+    // when a client attempts to connect.
+    HQUIC listener_ = nullptr;
 };
 
 }  // namespace lft
