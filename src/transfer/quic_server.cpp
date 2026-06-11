@@ -68,33 +68,14 @@ bool QuicServer::open_configuration() {
     return true;
 }
 
-// =============================================================================
-// Step 3 — Listener: bind a UDP port and accept incoming QUIC connections
-// =============================================================================
-//
-// msquic is event-driven. We give it C callback functions; msquic calls them when
-// something happens (new client, connection established, etc.).
-//
-// Flow when a client connects:
-//   1. Client sends QUIC handshake to our UDP port
-//   2. msquic fires QUIC_LISTENER_EVENT_NEW_CONNECTION on listener_callback
-//   3. We attach connection_callback and apply configuration_ (TLS + ALPN)
-//   4. Handshake completes → QUIC_CONNECTION_EVENT_CONNECTED on connection_callback
-//
-// Why two callbacks?
-//   - listener_  → "someone knocked on the door"
-//   - connection → "one specific client; handle their streams/messages later"
-
-// msquic requires a plain C function pointer. This static wrapper forwards to
-// the QuicServer instance passed as `context` when we called ListenerOpen.
+// simply calls on_connection_event with the connection and event. msquic speaks C, so we need to wrap the method in a static function.
 QUIC_STATUS QuicServer::connection_callback(HQUIC connection,
                                             void* context,
                                             QUIC_CONNECTION_EVENT* event) {
     return static_cast<QuicServer*>(context)->on_connection_event(connection, event);
 }
 
-// Called for each event on an accepted client connection.
-// Step 3 only logs CONNECTED; Step 5 will handle streams (send/receive echo).
+// Handles the connection event.
 QUIC_STATUS QuicServer::on_connection_event(HQUIC connection,
                                             QUIC_CONNECTION_EVENT* event) {
     (void)connection;
@@ -108,34 +89,29 @@ QUIC_STATUS QuicServer::on_connection_event(HQUIC connection,
     }
 }
 
-// Static wrapper for listener events (same pattern as connection_callback).
+// Simply calls on_listener_event with the listener and event. msquic speaks C, so we need to wrap the method in a static function.
 QUIC_STATUS QuicServer::listener_callback(HQUIC listener,
                                           void* context,
                                           QUIC_LISTENER_EVENT* event) {
     return static_cast<QuicServer*>(context)->on_listener_event(listener, event);
 }
 
-// Called when the listener sees activity (e.g. a new client attempting to connect).
+// Returns QUIC_STATUS from handling the event (e.g. success/failure of ConnectionSetConfiguration).
 QUIC_STATUS QuicServer::on_listener_event(HQUIC listener, QUIC_LISTENER_EVENT* event) {
     (void)listener;
     switch (event->Type) {
+        // Client started a QUIC handshake — not fully connected yet.
         case QUIC_LISTENER_EVENT_NEW_CONNECTION:
-            // A client started a QUIC handshake. msquic created a Connection handle for us.
-            //
-            // Before returning, we MUST:
-            //   1. SetCallbackHandler — tell msquic which function handles this connection
-            //   2. ConnectionSetConfiguration — apply our TLS cert + ALPN "lft"
-            //      (uses configuration_ from Step 2; without this the handshake is rejected)
             api_->SetCallbackHandler(
                 event->NEW_CONNECTION.Connection,
                 reinterpret_cast<void*>(connection_callback),
                 this);
+            // Tell msquic to continue the handshake using our TLS cert + ALPN "lft".
             return api_->ConnectionSetConfiguration(
                 event->NEW_CONNECTION.Connection,
                 configuration_);
 
         case QUIC_LISTENER_EVENT_STOP_COMPLETE:
-            // Fired after ListenerStop finishes shutting down (used during stop()).
             return QUIC_STATUS_SUCCESS;
 
         default:
@@ -143,7 +119,7 @@ QUIC_STATUS QuicServer::on_listener_event(HQUIC listener, QUIC_LISTENER_EVENT* e
     }
 }
 
-// Create the listener object and begin waiting for UDP/QUIC packets on host:port.
+// create listener object and bind to host:port, so msquic can start accepting QUIC handshakes.
 bool QuicServer::open_listener() {
     // Create listener_ and register listener_callback. Does NOT open the port yet.
     if (QUIC_FAILED(api_->ListenerOpen(
