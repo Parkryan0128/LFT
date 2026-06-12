@@ -3,6 +3,7 @@
 #include <msquic.h>
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <string_view>
 
@@ -71,6 +72,13 @@ private:
     // Step 3: UDP/QUIC listener on bind_host_:port_. Fires listener_callback
     // when a client attempts to connect.
     HQUIC listener_ = nullptr;
+
+    // The accepted client connection. msquic gives us this handle in
+    // NEW_CONNECTION and we must close it, otherwise RegistrationClose() in
+    // stop() blocks forever waiting for it to be cleaned up. Guarded by
+    // conn_mutex_ because the shutdown callback runs on an msquic worker thread.
+    std::mutex conn_mutex_;
+    HQUIC client_connection_ = nullptr;
 };
 
 }  // namespace lft

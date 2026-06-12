@@ -31,4 +31,10 @@ if(BUILD_MSQUIC_TESTS)
   target_link_libraries(quic_server_start_test PRIVATE lft_transfer)
   lft_set_msquic_rpath(quic_server_start_test)
   add_test(NAME Quic_Server_StartStop COMMAND quic_server_start_test)
+
+  # Milestone 1 Step 4 — client connects to a running server.
+  add_executable(quic_client_connect_test quic_client_connect_test.cpp)
+  target_link_libraries(quic_client_connect_test PRIVATE lft_transfer)
+  lft_set_msquic_rpath(quic_client_connect_test)
+  add_test(NAME Quic_Client_Connect COMMAND quic_client_connect_test)
 endif()

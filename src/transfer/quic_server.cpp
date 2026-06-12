@@ -78,12 +78,31 @@ QUIC_STATUS QuicServer::connection_callback(HQUIC connection,
 // Handles the connection event.
 QUIC_STATUS QuicServer::on_connection_event(HQUIC connection,
                                             QUIC_CONNECTION_EVENT* event) {
-    (void)connection;
     switch (event->Type) {
         case QUIC_CONNECTION_EVENT_CONNECTED:
             // TLS handshake finished; client is fully connected.
+            {
+                std::lock_guard lock(conn_mutex_);
+                client_connection_ = connection;
+            }
             std::cout << "QuicServer: client connected\n";
             return QUIC_STATUS_SUCCESS;
+
+        // Shutdown finished; msquic says it is safe to close the handle. We own
+        // this connection, so close it here (unless we already requested the
+        // close ourselves) and forget it.
+        case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE:
+            if (!event->SHUTDOWN_COMPLETE.AppCloseInProgress) {
+                api_->ConnectionClose(connection);
+            }
+            {
+                std::lock_guard lock(conn_mutex_);
+                if (client_connection_ == connection) {
+                    client_connection_ = nullptr;
+                }
+            }
+            return QUIC_STATUS_SUCCESS;
+
         default:
             return QUIC_STATUS_SUCCESS;
     }
@@ -215,6 +234,20 @@ bool QuicServer::start(std::string_view host) {
 }
 
 void QuicServer::stop() {
+    // If a client is still connected, ask msquic to shut the connection down.
+    // The SHUTDOWN_COMPLETE callback then closes the handle, which lets
+    // RegistrationClose() below return instead of blocking forever.
+    if (api_ != nullptr) {
+        HQUIC conn = nullptr;
+        {
+            std::lock_guard lock(conn_mutex_);
+            conn = client_connection_;
+        }
+        if (conn != nullptr) {
+            api_->ConnectionShutdown(conn, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0);
+        }
+    }
+
     // Tear down in reverse order of start (inner objects first).
     if (api_ != nullptr && listener_ != nullptr) {
         api_->ListenerStop(listener_);   // stop accepting new clients
