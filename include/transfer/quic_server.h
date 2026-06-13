@@ -2,12 +2,17 @@
 
 #include <msquic.h>
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <fstream>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
+
+#include "transfer/quic_transfer.h"
 
 namespace lft {
 
@@ -37,7 +42,17 @@ public:
                        int timeout_ms,
                        std::function<void()> on_armed = nullptr);
 
+    // Block until a client sends one file on a stream. Writes to output_path
+    // and verifies SHA-256. Returns false on timeout or hash mismatch.
+    bool receive_file(const std::string& output_path,
+                      int timeout_ms,
+                      std::function<void()> on_armed = nullptr);
+
+    // Result of the most recent receive_file() call.
+    const FileReceiveResult& last_file_result() const { return file_result_; }
+
 private:
+    enum class StreamMode { None, Echo, File };
     // Step 2: TLS + ALPN configuration (must succeed before ListenerOpen).
     bool open_configuration();
 
@@ -64,6 +79,14 @@ private:
 
     // Wake wait_for_echo() once the echo exchange finishes.
     void notify_echo_waiter(bool success);
+
+    // Wake receive_file() once the file is saved and verified.
+    void notify_file_waiter(bool success);
+
+    void try_parse_file_header();
+    void append_file_bytes(const uint8_t* data, uint32_t length);
+    void finish_file_receive(HQUIC stream);
+    bool send_file_ack(HQUIC stream, bool ok);
 
     uint16_t port_;
     std::string bind_host_;
@@ -102,6 +125,23 @@ private:
 
     // Bytes accumulated from the client's stream before PEER_SEND_SHUTDOWN.
     std::string stream_receive_buffer_;
+
+    // Read on the msquic worker thread, written by wait_for_echo/receive_file.
+    std::atomic<StreamMode> stream_mode_{StreamMode::None};
+
+    // receive_file() state.
+    std::mutex file_mutex_;
+    std::condition_variable file_cv_;
+    bool file_done_ = false;
+    bool file_ok_ = false;
+    std::string file_output_path_;
+    FileTransferHeader file_header_;
+    bool file_header_parsed_ = false;
+    bool file_io_error_ = false;   // could not open/write the output file
+    bool file_overflow_ = false;   // peer sent more bytes than declared
+    uint64_t file_bytes_written_ = 0;
+    std::unique_ptr<std::ofstream> file_out_;
+    FileReceiveResult file_result_;
 };
 
 }  // namespace lft

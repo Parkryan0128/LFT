@@ -2,6 +2,7 @@
 
 #include <msquic.h>
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
@@ -33,7 +34,11 @@ public:
                    std::string& out_reply,
                    int timeout_ms);
 
+    // Open a stream, send file header + bytes, wait for server OK/FAIL ack.
+    bool send_file(const std::string& file_path, int timeout_ms);
+
 private:
+    enum class StreamMode { Echo, File };
     // Step 2: client TLS + ALPN configuration (no cert, skips validation).
     bool open_configuration();
 
@@ -57,9 +62,28 @@ private:
     // Wake send_echo() once the server's reply arrives.
     void notify_echo_waiter(bool success);
 
+    // Wake send_file() once a chunk send completes or ack arrives.
+    void notify_send_waiter();
+    void notify_file_waiter(bool success);
+
+    // Open + start a fresh bidirectional stream into stream_.
+    bool open_stream();
+
+    bool stream_send_and_wait(HQUIC stream,
+                              const void* data,
+                              size_t length,
+                              bool fin,
+                              int timeout_ms);
+
+    // Abort the current stream (used on a send failure so the peer is notified
+    // instead of waiting for a timeout).
+    void abort_stream();
+
     std::string host_;
     uint16_t port_ = 0;
-    bool connected_ = false;
+    // Written on the msquic worker thread (connection callback), read on the
+    // app thread (connect/send/disconnect), so it must be atomic.
+    std::atomic<bool> connected_{false};
 
     // Step 1: API + registration.
     const QUIC_API_TABLE* api_ = nullptr;
@@ -86,6 +110,8 @@ private:
 
     // Step 5: bidirectional stream for echo.
     HQUIC stream_ = nullptr;
+    // Read on the msquic worker thread (stream callback); set before each send.
+    std::atomic<StreamMode> stream_mode_{StreamMode::Echo};
 
     // send_echo() blocks on this until the reply is received.
     std::mutex echo_mutex_;
@@ -93,6 +119,17 @@ private:
     bool echo_done_ = false;
     bool echo_ok_ = false;
     std::string echo_reply_;
+
+    // send_file() waits for chunk sends and the final server ack.
+    std::mutex send_mutex_;
+    std::condition_variable send_cv_;
+    bool send_done_ = false;
+
+    std::mutex file_mutex_;
+    std::condition_variable file_cv_;
+    bool file_done_ = false;
+    bool file_ok_ = false;
+    std::string file_ack_;
 };
 
 }  // namespace lft

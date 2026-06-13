@@ -29,6 +29,7 @@ int main() {
     std::condition_variable sync_cv;
     bool server_ready = false;
     bool server_failed = false;
+    bool client_done = false;
 
     std::thread server_thread([&]() {
         if (!server.start(kTestHost)) {
@@ -44,13 +45,17 @@ int main() {
                 server_reply,
                 /*timeout_ms=*/5000,
                 [&] {
-                    // Tell the client it is safe to connect and send.
                     std::lock_guard lock(sync_mutex);
                     server_ready = true;
                     sync_cv.notify_all();
                 })) {
             std::cerr << "server: wait_for_echo failed\n";
         }
+
+        std::unique_lock lock(sync_mutex);
+        sync_cv.wait(lock, [&] { return client_done; });
+        lock.unlock();
+
         server.stop();
     });
 
@@ -76,11 +81,22 @@ int main() {
     if (!client.send_echo(kTestMessage, client_reply, /*timeout_ms=*/5000)) {
         std::cerr << "client: send_echo failed\n";
         client.disconnect();
+        {
+            std::lock_guard lock(sync_mutex);
+            client_done = true;
+        }
+        sync_cv.notify_all();
         server_thread.join();
         return 1;
     }
 
     client.disconnect();
+
+    {
+        std::lock_guard lock(sync_mutex);
+        client_done = true;
+    }
+    sync_cv.notify_all();
     server_thread.join();
 
     if (client_reply != kTestMessage) {

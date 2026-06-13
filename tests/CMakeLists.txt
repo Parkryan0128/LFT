@@ -28,6 +28,23 @@ if(BUILD_MSQUIC_TESTS)
   lft_set_msquic_rpath(quic_echo_test)
   add_test(NAME Quic_Echo COMMAND quic_echo_test)
 
+  add_executable(quic_file_transfer_test quic_file_transfer_test.cpp)
+  target_link_libraries(quic_file_transfer_test PRIVATE lft_transfer)
+  lft_set_msquic_rpath(quic_file_transfer_test)
+  add_test(NAME Quic_File_Transfer COMMAND quic_file_transfer_test)
+
+  # Protocol + SHA-256 unit tests (no networking).
+  add_executable(transfer_protocol_test transfer_protocol_test.cpp)
+  target_link_libraries(transfer_protocol_test PRIVATE lft_transfer)
+  lft_set_msquic_rpath(transfer_protocol_test)
+  add_test(NAME Transfer_Protocol COMMAND transfer_protocol_test)
+
+  # File transfer edge cases (empty, multi-chunk, binary).
+  add_executable(quic_file_edgecases_test quic_file_edgecases_test.cpp)
+  target_link_libraries(quic_file_edgecases_test PRIVATE lft_transfer)
+  lft_set_msquic_rpath(quic_file_edgecases_test)
+  add_test(NAME Quic_File_Edgecases COMMAND quic_file_edgecases_test)
+
   add_executable(quic_server_start_test quic_server_start_test.cpp)
   target_link_libraries(quic_server_start_test PRIVATE lft_transfer)
   lft_set_msquic_rpath(quic_server_start_test)
