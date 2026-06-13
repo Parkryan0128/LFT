@@ -26,6 +26,7 @@ if(BUILD_MSQUIC_TESTS)
   add_executable(quic_echo_test quic_echo_test.cpp)
   target_link_libraries(quic_echo_test PRIVATE lft_transfer)
   lft_set_msquic_rpath(quic_echo_test)
+  add_test(NAME Quic_Echo COMMAND quic_echo_test)
 
   add_executable(quic_server_start_test quic_server_start_test.cpp)
   target_link_libraries(quic_server_start_test PRIVATE lft_transfer)

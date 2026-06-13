@@ -2,7 +2,9 @@
 
 #include <msquic.h>
 
+#include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -29,9 +31,11 @@ public:
 
     // Block until a client connects, sends one message, and we send a reply.
     // Returns false on timeout or error.
+    // on_armed (optional): called after expected message is set, before blocking.
     bool wait_for_echo(std::string_view expected_message,
                        std::string& out_reply,
-                       int timeout_ms);
+                       int timeout_ms,
+                       std::function<void()> on_armed = nullptr);
 
 private:
     // Step 2: TLS + ALPN configuration (must succeed before ListenerOpen).
@@ -42,6 +46,7 @@ private:
 
     QUIC_STATUS on_listener_event(HQUIC listener, QUIC_LISTENER_EVENT* event);
     QUIC_STATUS on_connection_event(HQUIC connection, QUIC_CONNECTION_EVENT* event);
+    QUIC_STATUS on_stream_event(HQUIC stream, QUIC_STREAM_EVENT* event);
 
     // msquic needs plain C function pointers; these static wrappers forward to
     // the methods above. `context` is the QuicServer* passed to ListenerOpen.
@@ -52,6 +57,13 @@ private:
     static QUIC_STATUS connection_callback(HQUIC connection,
                                            void* context,
                                            QUIC_CONNECTION_EVENT* event);
+
+    static QUIC_STATUS stream_callback(HQUIC stream,
+                                       void* context,
+                                       QUIC_STREAM_EVENT* event);
+
+    // Wake wait_for_echo() once the echo exchange finishes.
+    void notify_echo_waiter(bool success);
 
     uint16_t port_;
     std::string bind_host_;
@@ -79,6 +91,17 @@ private:
     // conn_mutex_ because the shutdown callback runs on an msquic worker thread.
     std::mutex conn_mutex_;
     HQUIC client_connection_ = nullptr;
+
+    // wait_for_echo() blocks on this until the client message is echoed back.
+    std::mutex echo_mutex_;
+    std::condition_variable echo_cv_;
+    bool echo_done_ = false;
+    bool echo_ok_ = false;
+    std::string expected_message_;
+    std::string* echo_out_reply_ = nullptr;
+
+    // Bytes accumulated from the client's stream before PEER_SEND_SHUTDOWN.
+    std::string stream_receive_buffer_;
 };
 
 }  // namespace lft

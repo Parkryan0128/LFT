@@ -48,6 +48,15 @@ private:
     // Wake connect() once the handshake succeeds or fails.
     void notify_connect_waiter(bool success);
 
+    QUIC_STATUS on_stream_event(HQUIC stream, QUIC_STREAM_EVENT* event);
+
+    static QUIC_STATUS stream_callback(HQUIC stream,
+                                       void* context,
+                                       QUIC_STREAM_EVENT* event);
+
+    // Wake send_echo() once the server's reply arrives.
+    void notify_echo_waiter(bool success);
+
     std::string host_;
     uint16_t port_ = 0;
     bool connected_ = false;
@@ -74,6 +83,16 @@ private:
     std::mutex shutdown_mutex_;
     std::condition_variable shutdown_cv_;
     bool shutdown_complete_ = false;
+
+    // Step 5: bidirectional stream for echo.
+    HQUIC stream_ = nullptr;
+
+    // send_echo() blocks on this until the reply is received.
+    std::mutex echo_mutex_;
+    std::condition_variable echo_cv_;
+    bool echo_done_ = false;
+    bool echo_ok_ = false;
+    std::string echo_reply_;
 };
 
 }  // namespace lft

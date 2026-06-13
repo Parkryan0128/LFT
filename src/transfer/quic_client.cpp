@@ -1,6 +1,7 @@
 #include "transfer/quic_client.h"
 
 #include <chrono>
+#include <cstring>
 #include <iostream>
 
 namespace lft {
@@ -26,6 +27,22 @@ void QuicClient::notify_connect_waiter(bool success) {
         connect_ok_ = success;
     }
     connect_cv_.notify_one();
+}
+
+void QuicClient::notify_echo_waiter(bool success) {
+    {
+        std::lock_guard lock(echo_mutex_);
+        echo_done_ = true;
+        echo_ok_ = success;
+    }
+    echo_cv_.notify_one();
+}
+
+// msquic speaks C, so this static wrapper forwards to the member method.
+QUIC_STATUS QuicClient::stream_callback(HQUIC stream,
+                                        void* context,
+                                        QUIC_STREAM_EVENT* event) {
+    return static_cast<QuicClient*>(context)->on_stream_event(stream, event);
 }
 
 // msquic speaks C, so this static wrapper forwards to the member method.
@@ -74,6 +91,41 @@ QUIC_STATUS QuicClient::on_connection_event(HQUIC connection,
                 shutdown_complete_ = true;
             }
             shutdown_cv_.notify_one();
+            return QUIC_STATUS_SUCCESS;
+
+        default:
+            return QUIC_STATUS_SUCCESS;
+    }
+}
+
+QUIC_STATUS QuicClient::on_stream_event(HQUIC stream, QUIC_STREAM_EVENT* event) {
+    (void)stream;
+    switch (event->Type) {
+        // Server sent the echo reply — append each chunk.
+        case QUIC_STREAM_EVENT_RECEIVE:
+            for (uint32_t i = 0; i < event->RECEIVE.BufferCount; ++i) {
+                const QUIC_BUFFER& buf = event->RECEIVE.Buffers[i];
+                echo_reply_.append(
+                    reinterpret_cast<const char*>(buf.Buffer),
+                    buf.Length);
+            }
+            return QUIC_STATUS_SUCCESS;
+
+        // Server finished sending the echo (FIN).
+        case QUIC_STREAM_EVENT_PEER_SEND_SHUTDOWN:
+            notify_echo_waiter(true);
+            return QUIC_STATUS_SUCCESS;
+
+        // Our StreamSend finished — free the buffer we passed as ClientContext.
+        case QUIC_STREAM_EVENT_SEND_COMPLETE:
+            std::free(event->SEND_COMPLETE.ClientContext);
+            return QUIC_STATUS_SUCCESS;
+
+        case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
+            if (!event->SHUTDOWN_COMPLETE.AppCloseInProgress) {
+                api_->StreamClose(stream);
+            }
+            stream_ = nullptr;
             return QUIC_STATUS_SUCCESS;
 
         default:
@@ -256,11 +308,83 @@ bool QuicClient::is_connected() const {
 bool QuicClient::send_echo(std::string_view message,
                            std::string& out_reply,
                            int timeout_ms) {
-    (void)message;
-    (void)out_reply;
-    (void)timeout_ms;
-    // TODO (Step 5): open bidi stream, send bytes, receive reply.
-    return false;
+    if (!connected_ || connection_ == nullptr || api_ == nullptr) {
+        std::cerr << "QuicClient::send_echo: not connected\n";
+        return false;
+    }
+
+    echo_reply_.clear();
+    {
+        std::lock_guard lock(echo_mutex_);
+        echo_done_ = false;
+        echo_ok_ = false;
+    }
+
+    // Step 1: Open a bidirectional stream on the existing connection.
+    if (QUIC_FAILED(api_->StreamOpen(
+            connection_,
+            QUIC_STREAM_OPEN_FLAG_NONE,
+            stream_callback,
+            this,
+            &stream_))) {
+        std::cerr << "QuicClient::send_echo: StreamOpen failed\n";
+        stream_ = nullptr;
+        return false;
+    }
+
+    // Step 2: Start the stream (assigns a QUIC stream ID).
+    if (QUIC_FAILED(api_->StreamStart(stream_, QUIC_STREAM_START_FLAG_NONE))) {
+        std::cerr << "QuicClient::send_echo: StreamStart failed\n";
+        api_->StreamClose(stream_);
+        stream_ = nullptr;
+        return false;
+    }
+
+    // Step 3: Send the message with FIN — tells the server we are done sending.
+    const size_t payload_len = message.size();
+    auto* send_raw = static_cast<uint8_t*>(std::malloc(sizeof(QUIC_BUFFER) + payload_len));
+    if (send_raw == nullptr) {
+        std::cerr << "QuicClient::send_echo: send buffer allocation failed\n";
+        api_->StreamClose(stream_);
+        stream_ = nullptr;
+        return false;
+    }
+
+    auto* send_buf = reinterpret_cast<QUIC_BUFFER*>(send_raw);
+    send_buf->Buffer = send_raw + sizeof(QUIC_BUFFER);
+    send_buf->Length = static_cast<uint32_t>(payload_len);
+    std::memcpy(send_buf->Buffer, message.data(), payload_len);
+
+    if (QUIC_FAILED(api_->StreamSend(
+            stream_,
+            send_buf,
+            1,
+            QUIC_SEND_FLAG_FIN,
+            send_buf))) {
+        std::cerr << "QuicClient::send_echo: StreamSend failed\n";
+        std::free(send_raw);
+        api_->StreamClose(stream_);
+        stream_ = nullptr;
+        return false;
+    }
+
+    // Step 4: Block until the server echoes back (PEER_SEND_SHUTDOWN in callback).
+    {
+        std::unique_lock lock(echo_mutex_);
+        const bool finished = echo_cv_.wait_for(
+            lock,
+            std::chrono::milliseconds(timeout_ms),
+            [this] { return echo_done_; });
+
+        if (!finished || !echo_ok_) {
+            std::cerr << "QuicClient::send_echo: timed out or echo failed\n";
+            return false;
+        }
+    }
+
+    out_reply = echo_reply_;
+    std::cout << "QuicClient: received echo \"" << out_reply << "\"\n";
+    return true;
 }
 
 }  // namespace lft

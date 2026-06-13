@@ -1,6 +1,8 @@
 #include "transfer/quic_server.h"
 
+#include <cstring>
 #include <filesystem>
+#include <chrono>
 #include <iostream>
 
 #ifndef LFT_CERT_FILE
@@ -32,6 +34,13 @@ bool QuicServer::open_configuration() {
     }
 
     // ALPN tells client and server which application protocol runs on this QUIC connection.
+    QUIC_SETTINGS settings{};
+    settings.IdleTimeoutMs = 30'000;
+    settings.IsSet.IdleTimeoutMs = TRUE;
+    // Allow the client to open one bidirectional stream (required for echo).
+    settings.PeerBidiStreamCount = 1;
+    settings.IsSet.PeerBidiStreamCount = TRUE;
+
     QUIC_BUFFER alpn_buffer{
         .Length = static_cast<uint32_t>(alpn_.size()),
         .Buffer = reinterpret_cast<uint8_t*>(alpn_.data()),
@@ -41,8 +50,8 @@ bool QuicServer::open_configuration() {
             registration_,
             &alpn_buffer,
             1,
-            nullptr,
-            0,
+            &settings,
+            sizeof(settings),
             nullptr,
             &configuration_))) {
         std::cerr << "QuicServer::open_configuration: ConfigurationOpen failed\n";
@@ -75,6 +84,21 @@ QUIC_STATUS QuicServer::connection_callback(HQUIC connection,
     return static_cast<QuicServer*>(context)->on_connection_event(connection, event);
 }
 
+QUIC_STATUS QuicServer::stream_callback(HQUIC stream,
+                                        void* context,
+                                        QUIC_STREAM_EVENT* event) {
+    return static_cast<QuicServer*>(context)->on_stream_event(stream, event);
+}
+
+void QuicServer::notify_echo_waiter(bool success) {
+    {
+        std::lock_guard lock(echo_mutex_);
+        echo_done_ = true;
+        echo_ok_ = success;
+    }
+    echo_cv_.notify_one();
+}
+
 // Handles the connection event.
 QUIC_STATUS QuicServer::on_connection_event(HQUIC connection,
                                             QUIC_CONNECTION_EVENT* event) {
@@ -100,6 +124,87 @@ QUIC_STATUS QuicServer::on_connection_event(HQUIC connection,
                 if (client_connection_ == connection) {
                     client_connection_ = nullptr;
                 }
+            }
+            return QUIC_STATUS_SUCCESS;
+
+        // The client opened a bidirectional stream — attach our stream callback.
+        case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED:
+            stream_receive_buffer_.clear();
+            api_->SetCallbackHandler(
+                event->PEER_STREAM_STARTED.Stream,
+                reinterpret_cast<void*>(stream_callback),
+                this);
+            return QUIC_STATUS_SUCCESS;
+
+        default:
+            return QUIC_STATUS_SUCCESS;
+    }
+}
+
+QUIC_STATUS QuicServer::on_stream_event(HQUIC stream, QUIC_STREAM_EVENT* event) {
+    switch (event->Type) {
+        // Client sent bytes — append each chunk to our buffer.
+        case QUIC_STREAM_EVENT_RECEIVE:
+            for (uint32_t i = 0; i < event->RECEIVE.BufferCount; ++i) {
+                const QUIC_BUFFER& buf = event->RECEIVE.Buffers[i];
+                stream_receive_buffer_.append(
+                    reinterpret_cast<const char*>(buf.Buffer),
+                    buf.Length);
+            }
+            return QUIC_STATUS_SUCCESS;
+
+        // Client finished sending (FIN) — echo the message back on the same stream.
+        case QUIC_STREAM_EVENT_PEER_SEND_SHUTDOWN: {
+            const bool matches = (stream_receive_buffer_ == expected_message_);
+            if (echo_out_reply_ != nullptr) {
+                *echo_out_reply_ = stream_receive_buffer_;
+            }
+
+            if (!matches) {
+                std::cerr << "QuicServer: unexpected message (expected \""
+                          << expected_message_ << "\", got \""
+                          << stream_receive_buffer_ << "\")\n";
+                notify_echo_waiter(false);
+                return QUIC_STATUS_SUCCESS;
+            }
+
+            // Build a send buffer: [QUIC_BUFFER header][payload bytes].
+            const size_t payload_len = stream_receive_buffer_.size();
+            auto* send_raw = static_cast<uint8_t*>(
+                std::malloc(sizeof(QUIC_BUFFER) + payload_len));
+            if (send_raw == nullptr) {
+                std::cerr << "QuicServer: echo send buffer allocation failed\n";
+                notify_echo_waiter(false);
+                return QUIC_STATUS_SUCCESS;
+            }
+
+            auto* send_buf = reinterpret_cast<QUIC_BUFFER*>(send_raw);
+            send_buf->Buffer = send_raw + sizeof(QUIC_BUFFER);
+            send_buf->Length = static_cast<uint32_t>(payload_len);
+            std::memcpy(send_buf->Buffer, stream_receive_buffer_.data(), payload_len);
+
+            if (QUIC_FAILED(api_->StreamSend(
+                    stream,
+                    send_buf,
+                    1,
+                    QUIC_SEND_FLAG_FIN,
+                    send_buf))) {
+                std::cerr << "QuicServer: StreamSend echo failed\n";
+                std::free(send_raw);
+                notify_echo_waiter(false);
+            }
+            return QUIC_STATUS_SUCCESS;
+        }
+
+        // Echo send finished — free the buffer we passed to StreamSend.
+        case QUIC_STREAM_EVENT_SEND_COMPLETE:
+            std::free(event->SEND_COMPLETE.ClientContext);
+            notify_echo_waiter(true);
+            return QUIC_STATUS_SUCCESS;
+
+        case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
+            if (!event->SHUTDOWN_COMPLETE.AppCloseInProgress) {
+                api_->StreamClose(stream);
             }
             return QUIC_STATUS_SUCCESS;
 
@@ -279,12 +384,37 @@ bool QuicServer::is_running() const {
 
 bool QuicServer::wait_for_echo(std::string_view expected_message,
                                std::string& out_reply,
-                               int timeout_ms) {
-    (void)expected_message;
-    (void)out_reply;
-    (void)timeout_ms;
-    // TODO: accept connection, receive stream data, send reply.
-    return false;
+                               int timeout_ms,
+                               std::function<void()> on_armed) {
+    {
+        std::lock_guard lock(echo_mutex_);
+        expected_message_ = std::string(expected_message);
+        echo_out_reply_ = &out_reply;
+        echo_done_ = false;
+        echo_ok_ = false;
+        stream_receive_buffer_.clear();
+    }
+
+    // Safe for the client to send now — expected message is armed.
+    if (on_armed) {
+        on_armed();
+    }
+
+    std::unique_lock lock(echo_mutex_);
+    const bool finished = echo_cv_.wait_for(
+        lock,
+        std::chrono::milliseconds(timeout_ms),
+        [this] { return echo_done_; });
+
+    echo_out_reply_ = nullptr;
+
+    if (!finished || !echo_ok_) {
+        std::cerr << "QuicServer::wait_for_echo: timed out or echo failed\n";
+        return false;
+    }
+
+    std::cout << "QuicServer: echoed \"" << out_reply << "\"\n";
+    return true;
 }
 
 }  // namespace lft
