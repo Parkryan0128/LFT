@@ -1,0 +1,103 @@
+Milestone 1 is a loopback file transfer. There are two roles, each a class:
+
+QuicServer — listens, accepts a connection, receives bytes, writes them to disk, verifies the hash, and acks.
+QuicClient — connects, hashes the file, sends a header + the file bytes, and waits for the ack.
+Supporting pieces: a wire protocol (quic_transfer) for the metadata header, a SHA-256 helper (sha256), and a small internal send helper (quic_send_buffer.h).
+
+QuicServer (quic_server.cpp)
+start(host) — What: brings the server fully online. How: MsQuicOpen2 (load the API function table) → RegistrationOpen (register the app with msquic) → open_configuration() (TLS + ALPN) → open_listener() (bind the UDP port). Why the stop() calls on failure: any partial setup is torn down by reusing the normal cleanup path instead of duplicating it.
+
+open_configuration() — What: sets up TLS and protocol settings. How: loads the self-signed cert/key from certs/, sets ALPN "lft" (so client and server agree they're speaking the same app protocol), an idle timeout, and PeerBidiStreamCount = 1 (lets the client open exactly one stream). Why: QUIC refuses to run without TLS credentials and an agreed ALPN.
+
+open_listener() — What: opens the port and starts accepting handshakes. How: ListenerOpen creates the listener object, then it builds a QUIC_ADDR from host:port and ListenerStart actually binds the UDP socket.
+
+on_listener_event(NEW_CONNECTION) — What: a client is starting a handshake. How: attaches connection_callback to the new connection and calls ConnectionSetConfiguration to tell msquic "continue the TLS handshake using my cert + ALPN."
+
+on_connection_event(...) — handles the connection lifecycle:
+
+CONNECTED: handshake done; store the client connection handle (under conn_mutex_) so stop() can shut it down later.
+PEER_STREAM_STARTED: the client opened a stream; reset all per-transfer state and attach stream_callback to that stream.
+SHUTDOWN_COMPLETE: msquic says the handle is dead; we ConnectionClose it (unless we triggered the close) and forget it. Why this matters: if you don't close connection handles, RegistrationClose in stop() blocks forever.
+on_stream_event(...) — the heart of receiving:
+
+RECEIVE: bytes arrived → in File mode hand them to append_file_bytes; in Echo mode just buffer them.
+PEER_SEND_SHUTDOWN: client sent everything (sent FIN) → File mode calls finish_file_receive; Echo mode compares + echoes back.
+SEND_COMPLETE: msquic is done with our send buffer → std::free it, and for File mode notify the waiter now that the ack actually left.
+PEER_SEND_ABORTED / PEER_RECEIVE_ABORTED: client bailed mid-transfer → fail fast instead of waiting for timeout.
+SHUTDOWN_COMPLETE: close the stream handle.
+append_file_bytes(data, len) — What: routes incoming bytes. How: while the header isn't parsed yet, it accumulates into a buffer and retries try_parse_file_header; once parsed, it writes straight to the output file. Why the cap: it never writes more than the declared size (sets file_overflow_ if the peer sends extra) and stops on I/O errors.
+
+try_parse_file_header() — What: attempts to decode the metadata header from buffered bytes. How: calls decode_file_header; if it succeeds it opens the output file and immediately feeds any leftover bytes (the start of the body that arrived in the same packet) into append_file_bytes. Why the size guard: a malicious/buggy peer might never send the header terminator, so it refuses to buffer past kMaxHeaderBytes (64 KB).
+
+finish_file_receive(stream) — What: finalizes and verifies. How: closes the file, then checks in order: I/O error? header missing? overflow? size mismatch? hash mismatch? If all good, it re-hashes the written file and compares to the declared hash. Then sends OK/FAIL via send_file_ack.
+
+send_file_ack(stream, ok) — sends "OK\n" or "FAIL\n" with FIN, using the shared stream_send_copy helper.
+
+receive_file(output_path, timeout, on_armed) — What: the public blocking "receive one file" call. How: creates the destination directory, arms all the file-receive state, fires on_armed() (a test hook that signals "I'm ready, client may send now" — avoids a race), then blocks on file_cv_ until done or timeout.
+
+wait_for_echo(...) — same shape as receive_file but for the Step-5 echo feature (kept around as a simpler building block / test).
+
+stop() — What: clean shutdown. How: shuts down the live client connection first (so its handle gets closed in the callback), then tears down listener → configuration → registration → API, in reverse order of start. Why order matters: RegistrationClose blocks until all its child objects are closed.
+
+QuicClient (quic_client.cpp)
+connect(host, port) — What: synchronous connect. How: MsQuicOpen2 → RegistrationOpen → open_configuration() → ConnectionOpen → ConnectionStart (async handshake) → block on connect_cv_ until the callback reports CONNECTED/failure/timeout. Failure paths call disconnect() to unwind.
+
+open_configuration() — like the server's, but client-side: ALPN "lft", and crucially QUIC_CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION — it skips verifying the server cert because we're using a dev self-signed cert. (This is a dev-only shortcut.)
+
+on_connection_event(...):
+
+CONNECTED: set connected_, wake connect().
+SHUTDOWN_INITIATED_BY_TRANSPORT / BY_PEER: if we weren't connected yet, that means the handshake failed → wake connect() with failure.
+SHUTDOWN_COMPLETE: close the connection handle and wake disconnect().
+on_stream_event(...) (mirror of the server's):
+
+RECEIVE: collect reply bytes (file ack or echo reply).
+PEER_SEND_SHUTDOWN: server finished replying → in File mode the ack is complete, so check it starts with "OK".
+SEND_COMPLETE: free the send buffer; in File mode wake the send waiter (this is the backpressure mechanism — see below).
+SHUTDOWN_COMPLETE: close the stream.
+open_stream() — StreamOpen + StreamStart; shared by echo and file paths (extracted to avoid duplication).
+
+stream_send_and_wait(data, len, fin, timeout) — What: send one chunk and wait until msquic confirms it sent before sending the next. How: stream_send_copy then block on send_cv_ until SEND_COMPLETE. Why: this is simple flow control — it prevents queuing the entire file in memory at once.
+
+send_file(path, timeout) — the main Milestone-1 function:
+
+Validate the path (exists, not a directory, regular file, readable size).
+sha256_file → compute the hash.
+Build + encode_file_header (name, size, hash) and open_stream().
+Send the header (no FIN).
+Send the body in 64 KB chunks via stream_send_and_wait, putting FIN on the last chunk (empty files send a single empty FIN chunk).
+Block on file_cv_ for the server's OK/FAIL ack. On any send failure it calls abort_stream() so the server learns immediately instead of timing out.
+send_echo(...) — the simpler Step-5 sibling: open a stream, send a message with FIN, wait for the same bytes back.
+
+disconnect() — ConnectionShutdown, wait for SHUTDOWN_COMPLETE, then close configuration → registration → API. Also the destructor's cleanup and the failure-unwind path for connect().
+
+abort_stream() — StreamShutdown(..., ABORT); used on errors to signal the peer right away.
+
+Wire protocol (quic_transfer.cpp)
+A tiny text header sent before the file bytes:
+
+LFT/1
+name=video.mp4
+size=123456
+hash=<64 hex chars>
+<blank line>
+encode_file_header(header) — serializes the struct to that text, sanitizing the name and lowercasing the hash.
+
+decode_file_header(data, out, consumed) — finds the \n\n terminator, parses each key=value, validates magic/name/size/hash, and reports how many bytes the header occupied (so the caller knows where the body begins). Why so strict: it rejects wrong magic, missing fields, bad/short hashes, and non-numeric sizes — and treats size=0 as valid (empty file).
+
+sanitize_file_name(raw) — strips directory components and .. (prevents path-traversal writes outside the target dir), replaces control chars / slashes, defaults to received.bin.
+
+parse_full_u64 / is_sha256_hex — strict helpers: the integer parse must consume the entire string (rejects "12x"), and a hash must be exactly 64 hex chars.
+
+SHA-256 (sha256.cpp)
+sha256_file(path, out) — streams the file through OpenSSL's EVP digest in 64 KB reads (so a huge file isn't loaded into memory) and returns lowercase hex.
+
+sha256_bytes(data, out) — same for an in-memory buffer (used by unit tests).
+
+Both sides hash independently; matching hashes = the transfer is byte-for-byte correct, which is the whole point of Milestone 1.
+
+Shared helper (quic_send_buffer.h)
+stream_send_copy(api, stream, data, len, flags) — msquic's StreamSend doesn't copy your data; it borrows the buffer until SEND_COMPLETE. So this allocates [QUIC_BUFFER header][payload] as one block, copies the bytes in, sends it (passing the block as the "context"), and the SEND_COMPLETE handler frees it. This one helper replaced four near-identical copies across client and server.
+
+How a full transfer flows
+server.receive_file() arms and blocks → client.connect() handshakes → client.send_file() opens a stream, sends header + chunks with FIN → server parses header, writes body, re-hashes, sends OK → client sees OK, returns success → both verify the hashes match.
