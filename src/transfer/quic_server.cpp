@@ -140,6 +140,9 @@ QUIC_STATUS QuicServer::on_connection_event(HQUIC connection,
                     client_connection_ = nullptr;
                 }
             }
+            // Wake receive_file()/wait_for_echo() if they are draining the
+            // connection close (confirms our ack reached the client).
+            conn_cv_.notify_all();
             return QUIC_STATUS_SUCCESS;
 
         // The client opened a bidirectional stream — attach our stream callback.
@@ -264,6 +267,13 @@ void QuicServer::try_parse_file_header() {
 
     file_header_ = header;
     file_header_parsed_ = true;
+
+    // For a directory target, the final path is the dir + the sender's
+    // (already sanitized) filename, so traversal can't escape the directory.
+    if (file_output_is_dir_) {
+        file_output_path_ =
+            (std::filesystem::path(file_output_dir_) / file_header_.name).string();
+    }
 
     file_out_ = std::make_unique<std::ofstream>(
         file_output_path_,
@@ -577,17 +587,33 @@ bool QuicServer::wait_for_echo(std::string_view expected_message,
 bool QuicServer::receive_file(const std::string& output_path,
                               int timeout_ms,
                               std::function<void()> on_armed) {
-    // Make sure the destination directory exists before bytes arrive.
     std::error_code ec;
-    const auto parent = std::filesystem::path(output_path).parent_path();
-    if (!parent.empty()) {
-        std::filesystem::create_directories(parent, ec);
+
+    // Decide whether output_path names a directory (save under the sender's
+    // filename) or a full file path (save exactly there). A trailing separator
+    // or an existing directory means "directory".
+    const bool looks_like_dir =
+        output_path.empty() ||
+        output_path.back() == '/' ||
+        output_path.back() == '\\' ||
+        std::filesystem::is_directory(output_path, ec);
+
+    if (looks_like_dir) {
+        std::filesystem::create_directories(output_path, ec);
+    } else {
+        // Make sure the parent directory exists before bytes arrive.
+        const auto parent = std::filesystem::path(output_path).parent_path();
+        if (!parent.empty()) {
+            std::filesystem::create_directories(parent, ec);
+        }
     }
 
     {
         std::lock_guard lock(file_mutex_);
         stream_mode_ = StreamMode::File;
-        file_output_path_ = output_path;
+        file_output_is_dir_ = looks_like_dir;
+        file_output_dir_ = looks_like_dir ? output_path : std::string();
+        file_output_path_ = looks_like_dir ? std::string() : output_path;
         file_header_parsed_ = false;
         file_io_error_ = false;
         file_overflow_ = false;
@@ -615,6 +641,19 @@ bool QuicServer::receive_file(const std::string& output_path,
         }
         std::cerr << "QuicServer::receive_file: timed out or transfer failed\n";
         return false;
+    }
+    lock.unlock();
+
+    // The "OK" ack was only queued (SEND_COMPLETE = locally accepted, not yet
+    // delivered). Wait for the client to close the connection — which it does
+    // right after reading the ack — before we let the caller tear msquic down,
+    // otherwise the ack can be lost. Bounded so a vanished peer can't hang us.
+    {
+        std::unique_lock conn_lock(conn_mutex_);
+        conn_cv_.wait_for(
+            conn_lock,
+            std::chrono::seconds(2),
+            [this] { return client_connection_ == nullptr; });
     }
 
     return true;

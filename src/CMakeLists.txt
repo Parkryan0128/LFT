@@ -11,8 +11,7 @@ add_subdirectory(transfer)
 add_executable(lft_cli main.cpp)
 
 target_include_directories(lft_cli PRIVATE ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(lft_cli PRIVATE lft_net)
+target_link_libraries(lft_cli PRIVATE lft_net lft_transfer)
 
-# Placeholder for linking libraries (OpenSSL, etc.)
-# find_package(OpenSSL REQUIRED)
-# target_link_libraries(lft_cli PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+# Embed the msquic/OpenSSL rpath so the CLI runs without DYLD overrides.
+lft_set_msquic_rpath(lft_cli)

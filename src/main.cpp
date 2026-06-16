@@ -7,8 +7,11 @@
 // Usage:
 //   lft recv --port <n> --out <dir>
 //   lft send --host <ip> --port <n> --file <path>
+#include "transfer/quic_server.h"
+
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -19,6 +22,9 @@
 namespace {
 
 constexpr uint16_t kDefaultPort = 53317;
+
+// How long `recv` waits for a sender to connect before giving up.
+constexpr int kRecvTimeoutMs = 10 * 60 * 1000;  // 10 minutes
 
 void print_usage(std::ostream& os) {
     os << "LFT — LAN File Transfer\n\n"
@@ -136,10 +142,45 @@ int run_recv(const std::vector<std::string_view>& args) {
         std::cerr << "error: recv requires --out <dir>\n";
         return 2;
     }
+    const std::string& out_dir = out_it->second;
 
-    // Step 1 stub: no networking yet.
-    std::cout << "[recv] would listen on port " << *port
-              << " and save into \"" << out_it->second << "\"\n";
+    // --out is always a directory; create it up front so the engine saves the
+    // file under the sender's name (and so the dir-vs-file decision is certain).
+    std::error_code ec;
+    std::filesystem::create_directories(out_dir, ec);
+    if (!std::filesystem::is_directory(out_dir, ec)) {
+        std::cerr << "error: --out must be a directory: " << out_dir << "\n";
+        return 1;
+    }
+
+    // Bind to loopback for now; LAN binding (0.0.0.0) comes in a later step.
+    lft::QuicServer server(*port);
+    if (!server.start()) {
+        std::cerr << "error: failed to start receiver on port " << *port << "\n";
+        return 1;
+    }
+
+    // Flush now: this is a live status line and stdout is fully buffered when
+    // piped, so without the flush the user wouldn't see it until exit.
+    std::cout << "[recv] listening on 127.0.0.1:" << *port
+              << ", saving into \"" << out_dir << "\" (waiting for sender)"
+              << std::endl;
+
+    const bool ok = server.receive_file(out_dir, kRecvTimeoutMs);
+    server.stop();
+
+    const lft::FileReceiveResult& result = server.last_file_result();
+    if (!ok) {
+        std::cerr << "error: receive failed";
+        if (!result.error.empty()) {
+            std::cerr << ": " << result.error;
+        }
+        std::cerr << "\n";
+        return 1;
+    }
+
+    std::cout << "received \"" << result.path << "\" ("
+              << result.bytes_received << " bytes, SHA-256 verified)\n";
     return 0;
 }
 

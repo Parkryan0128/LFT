@@ -113,6 +113,7 @@ private:
     // stop() blocks forever waiting for it to be cleaned up. Guarded by
     // conn_mutex_ because the shutdown callback runs on an msquic worker thread.
     std::mutex conn_mutex_;
+    std::condition_variable conn_cv_;  // notified when client_connection_ clears
     HQUIC client_connection_ = nullptr;
 
     // wait_for_echo() blocks on this until the client message is echoed back.
@@ -134,6 +135,11 @@ private:
     std::condition_variable file_cv_;
     bool file_done_ = false;
     bool file_ok_ = false;
+    // Where to write. If file_output_is_dir_ is true, file_output_dir_ holds the
+    // target directory and the final file_output_path_ is computed from the
+    // sender's (sanitized) filename once the header arrives.
+    bool file_output_is_dir_ = false;
+    std::string file_output_dir_;
     std::string file_output_path_;
     FileTransferHeader file_header_;
     bool file_header_parsed_ = false;
