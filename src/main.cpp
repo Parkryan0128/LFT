@@ -20,6 +20,13 @@
 #include <unordered_map>
 #include <vector>
 
+// POSIX network-interface enumeration (macOS + Linux) for showing the LAN IP.
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+
 namespace {
 
 constexpr uint16_t kDefaultPort = 53317;
@@ -29,6 +36,31 @@ constexpr int kRecvTimeoutMs = 10 * 60 * 1000;  // 10 minutes
 
 // How long `send` waits for the transfer (handshake + bytes + ack).
 constexpr int kSendTimeoutMs = 5 * 60 * 1000;  // 5 minutes
+
+// Collect this machine's non-loopback IPv4 addresses, so a `recv` user can tell
+// the sender which IP to target. Best-effort: returns empty on any failure.
+std::vector<std::string> local_ipv4s() {
+    std::vector<std::string> result;
+    ifaddrs* ifa_list = nullptr;
+    if (getifaddrs(&ifa_list) != 0) {
+        return result;
+    }
+    for (ifaddrs* ifa = ifa_list; ifa != nullptr; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == nullptr || ifa->ifa_addr->sa_family != AF_INET) {
+            continue;
+        }
+        if ((ifa->ifa_flags & IFF_UP) == 0 || (ifa->ifa_flags & IFF_LOOPBACK) != 0) {
+            continue;
+        }
+        const auto* addr = reinterpret_cast<const sockaddr_in*>(ifa->ifa_addr);
+        char buf[INET_ADDRSTRLEN] = {};
+        if (inet_ntop(AF_INET, &addr->sin_addr, buf, sizeof(buf)) != nullptr) {
+            result.emplace_back(buf);
+        }
+    }
+    freeifaddrs(ifa_list);
+    return result;
+}
 
 void print_usage(std::ostream& os) {
     os << "LFT — LAN File Transfer\n\n"
@@ -157,18 +189,27 @@ int run_recv(const std::vector<std::string_view>& args) {
         return 1;
     }
 
-    // Bind to loopback for now; LAN binding (0.0.0.0) comes in a later step.
+    // Bind all interfaces so other machines on the LAN can reach us.
     lft::QuicServer server(*port);
-    if (!server.start()) {
+    if (!server.start("0.0.0.0")) {
         std::cerr << "error: failed to start receiver on port " << *port << "\n";
         return 1;
     }
 
-    // Flush now: this is a live status line and stdout is fully buffered when
-    // piped, so without the flush the user wouldn't see it until exit.
-    std::cout << "[recv] listening on 127.0.0.1:" << *port
-              << ", saving into \"" << out_dir << "\" (waiting for sender)"
-              << std::endl;
+    std::cout << "[recv] listening on port " << *port << " (all interfaces), "
+              << "saving into \"" << out_dir << "\"\n";
+    const std::vector<std::string> ips = local_ipv4s();
+    if (ips.empty()) {
+        std::cout << "  (could not determine this machine's LAN IP)\n";
+    } else {
+        std::cout << "  on another machine, run:\n";
+        for (const std::string& ip : ips) {
+            std::cout << "    lft send --host " << ip << " --port " << *port
+                      << " --file <path>\n";
+        }
+    }
+    // Flush: live status line, and stdout is fully buffered when piped.
+    std::cout << "  waiting for sender..." << std::endl;
 
     const bool ok = server.receive_file(out_dir, kRecvTimeoutMs);
     server.stop();
