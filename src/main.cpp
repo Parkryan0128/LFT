@@ -7,6 +7,7 @@
 // Usage:
 //   lft recv --port <n> --out <dir>
 //   lft send --host <ip> --port <n> --file <path>
+#include "transfer/quic_client.h"
 #include "transfer/quic_server.h"
 
 #include <cstdint>
@@ -25,6 +26,9 @@ constexpr uint16_t kDefaultPort = 53317;
 
 // How long `recv` waits for a sender to connect before giving up.
 constexpr int kRecvTimeoutMs = 10 * 60 * 1000;  // 10 minutes
+
+// How long `send` waits for the transfer (handshake + bytes + ack).
+constexpr int kSendTimeoutMs = 5 * 60 * 1000;  // 5 minutes
 
 void print_usage(std::ostream& os) {
     os << "LFT — LAN File Transfer\n\n"
@@ -212,10 +216,33 @@ int run_send(const std::vector<std::string_view>& args) {
         std::cerr << "error: send requires --file <path>\n";
         return 2;
     }
+    const std::string& host = host_it->second;
+    const std::string& file = file_it->second;
 
-    // Step 1 stub: no networking yet.
-    std::cout << "[send] would send \"" << file_it->second << "\" to "
-              << host_it->second << ':' << *port << "\n";
+    // Fail early with a clear message before opening a connection.
+    std::error_code ec;
+    if (!std::filesystem::exists(file, ec) || std::filesystem::is_directory(file, ec)) {
+        std::cerr << "error: file not found: " << file << "\n";
+        return 1;
+    }
+
+    lft::QuicClient client;
+    std::cout << "[send] connecting to " << host << ':' << *port << "..." << std::endl;
+    if (!client.connect(host, *port)) {
+        std::cerr << "error: could not connect to " << host << ':' << *port << "\n";
+        return 1;
+    }
+
+    const bool ok = client.send_file(file, kSendTimeoutMs);
+    client.disconnect();
+
+    if (!ok) {
+        std::cerr << "error: transfer failed\n";
+        return 1;
+    }
+
+    std::cout << "sent \"" << file << "\" to " << host << ':' << *port
+              << " (SHA-256 verified by receiver)\n";
     return 0;
 }
 
