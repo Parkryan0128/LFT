@@ -153,6 +153,9 @@ QUIC_STATUS QuicServer::on_connection_event(HQUIC connection,
             file_overflow_ = false;
             file_bytes_written_ = 0;
             file_out_.reset();
+            file_stream_ = event->PEER_STREAM_STARTED.Stream;
+            file_accepted_.store(false);
+            sending_final_ack_ = false;
             api_->SetCallbackHandler(
                 event->PEER_STREAM_STARTED.Stream,
                 reinterpret_cast<void*>(stream_callback),
@@ -181,7 +184,12 @@ QUIC_STATUS QuicServer::on_stream_event(HQUIC stream, QUIC_STREAM_EVENT* event) 
 
         case QUIC_STREAM_EVENT_PEER_SEND_SHUTDOWN:
             if (stream_mode_ == StreamMode::File) {
-                finish_file_receive(stream);
+                // Finalize once accepted, or report a header/IO error. While
+                // awaiting an accept/reject decision the client sends no FIN, so
+                // this won't fire prematurely.
+                if (file_accepted_.load() || file_io_error_) {
+                    finish_file_receive(stream);
+                }
             } else {
                 const bool matches = (stream_receive_buffer_ == expected_message_);
                 if (echo_out_reply_ != nullptr) {
@@ -212,7 +220,11 @@ QUIC_STATUS QuicServer::on_stream_event(HQUIC stream, QUIC_STREAM_EVENT* event) 
         case QUIC_STREAM_EVENT_SEND_COMPLETE:
             std::free(event->SEND_COMPLETE.ClientContext);
             if (stream_mode_ == StreamMode::File) {
-                notify_file_waiter(file_result_.success);
+                // Several sends happen on a file stream (ACCEPT, then OK/FAIL).
+                // Only the final ack should wake receive_file().
+                if (sending_final_ack_) {
+                    notify_file_waiter(file_result_.success);
+                }
             } else {
                 notify_echo_waiter(true);
             }
@@ -261,6 +273,8 @@ void QuicServer::try_parse_file_header() {
             file_result_.error = "header too large or malformed";
             file_header_parsed_ = true;  // stop buffering further bytes
             stream_receive_buffer_.clear();
+            // Wake receive_file() (incl. a pending prompt) so it fails fast.
+            notify_file_waiter(false);
         }
         return;
     }
@@ -275,17 +289,25 @@ void QuicServer::try_parse_file_header() {
             (std::filesystem::path(file_output_dir_) / file_header_.name).string();
     }
 
-    file_out_ = std::make_unique<std::ofstream>(
-        file_output_path_,
-        std::ios::binary | std::ios::trunc);
-    if (!file_out_->is_open()) {
-        file_io_error_ = true;
-        file_result_.error = "failed to open output file";
-        file_out_.reset();
+    // If a prompt is registered, hand the decision to receive_file()'s thread
+    // and stop here: the client waits for ACCEPT before sending any body bytes.
+    if (file_offer_) {
+        std::lock_guard lock(file_mutex_);
+        offer_ready_ = true;
+        file_cv_.notify_all();
         stream_receive_buffer_.clear();
         return;
     }
 
+    // No prompt: auto-accept right here on the callback thread.
+    if (!open_output_file()) {
+        stream_receive_buffer_.clear();
+        return;
+    }
+    file_accepted_.store(true);
+    stream_send_copy(api_, file_stream_, "ACCEPT\n", 7, QUIC_SEND_FLAG_NONE);
+
+    // Normally no body has arrived yet, but handle any trailing bytes safely.
     const std::string_view body = std::string_view(stream_receive_buffer_).substr(header_bytes);
     if (!body.empty()) {
         append_file_bytes(reinterpret_cast<const uint8_t*>(body.data()),
@@ -295,12 +317,30 @@ void QuicServer::try_parse_file_header() {
     stream_receive_buffer_.clear();
 }
 
+bool QuicServer::open_output_file() {
+    file_out_ = std::make_unique<std::ofstream>(
+        file_output_path_,
+        std::ios::binary | std::ios::trunc);
+    if (!file_out_->is_open()) {
+        file_io_error_ = true;
+        file_result_.error = "failed to open output file";
+        file_out_.reset();
+        return false;
+    }
+    return true;
+}
+
 void QuicServer::append_file_bytes(const uint8_t* data, uint32_t length) {
     if (!file_header_parsed_) {
         stream_receive_buffer_.append(
             reinterpret_cast<const char*>(data),
             length);
         try_parse_file_header();
+        return;
+    }
+
+    // Awaiting the accept/reject decision — no body should arrive yet.
+    if (!file_accepted_.load()) {
         return;
     }
 
@@ -382,10 +422,13 @@ void QuicServer::finish_file_receive(HQUIC stream) {
 
     file_result_.success = verify_ok;
 
+    // Mark so SEND_COMPLETE of this ack (not the earlier ACCEPT) wakes the waiter.
+    sending_final_ack_ = true;
     if (!send_file_ack(stream, verify_ok)) {
+        sending_final_ack_ = false;
         notify_file_waiter(false);
     }
-    // On success, notify_file_waiter runs from SEND_COMPLETE after ack is sent.
+    // notify_file_waiter runs from SEND_COMPLETE after the ack is sent.
 }
 
 // Simply calls on_listener_event with the listener and event. msquic speaks C, so we need to wrap the method in a static function.
@@ -586,7 +629,8 @@ bool QuicServer::wait_for_echo(std::string_view expected_message,
 
 bool QuicServer::receive_file(const std::string& output_path,
                               int timeout_ms,
-                              std::function<void()> on_armed) {
+                              std::function<void()> on_armed,
+                              std::function<bool(const FileTransferHeader&)> on_offer) {
     std::error_code ec;
 
     // Decide whether output_path names a directory (save under the sender's
@@ -614,6 +658,10 @@ bool QuicServer::receive_file(const std::string& output_path,
         file_output_is_dir_ = looks_like_dir;
         file_output_dir_ = looks_like_dir ? output_path : std::string();
         file_output_path_ = looks_like_dir ? std::string() : output_path;
+        file_offer_ = std::move(on_offer);
+        offer_ready_ = false;
+        file_accepted_.store(false);
+        sending_final_ack_ = false;
         file_header_parsed_ = false;
         file_io_error_ = false;
         file_overflow_ = false;
@@ -629,7 +677,66 @@ bool QuicServer::receive_file(const std::string& output_path,
         on_armed();
     }
 
+    // The last message we send (REJECT or OK/FAIL) is only queued, not yet
+    // delivered, when its SEND_COMPLETE fires. Wait for the client to close —
+    // which it does right after reading that message — before tearing down,
+    // otherwise the message can be lost. Bounded so a vanished peer can't hang.
+    auto drain_connection = [this] {
+        std::unique_lock conn_lock(conn_mutex_);
+        conn_cv_.wait_for(
+            conn_lock,
+            std::chrono::seconds(2),
+            [this] { return client_connection_ == nullptr; });
+    };
+
     std::unique_lock lock(file_mutex_);
+
+    // Accept/reject phase: only when a prompt is registered. The sender waits
+    // for ACCEPT before transmitting any file bytes.
+    if (file_offer_) {
+        const bool got = file_cv_.wait_for(
+            lock,
+            std::chrono::milliseconds(timeout_ms),
+            [this] { return offer_ready_ || file_done_; });
+
+        if (!got) {
+            std::cerr << "QuicServer::receive_file: timed out waiting for sender\n";
+            return false;
+        }
+        if (file_done_) {  // an error finished things before we could prompt
+            return false;
+        }
+
+        const FileTransferHeader header = file_header_;
+        lock.unlock();
+
+        const bool accept = file_offer_(header);  // prompt the user
+
+        if (!accept) {
+            stream_send_copy(api_, file_stream_, "REJECT\n", 7, QUIC_SEND_FLAG_FIN);
+            file_result_.rejected = true;
+            file_result_.error = "rejected by receiver";
+            std::cout << "QuicServer: rejected file \"" << header.name << "\"\n";
+            drain_connection();
+            return false;
+        }
+
+        {
+            std::lock_guard flock(file_mutex_);
+            if (!open_output_file()) {
+                stream_send_copy(api_, file_stream_, "REJECT\n", 7, QUIC_SEND_FLAG_FIN);
+                std::cerr << "QuicServer: cannot open output, rejecting\n";
+                drain_connection();
+                return false;
+            }
+            file_accepted_.store(true);
+        }
+        // Tell the sender to start streaming the body (no FIN: ack follows).
+        stream_send_copy(api_, file_stream_, "ACCEPT\n", 7, QUIC_SEND_FLAG_NONE);
+
+        lock.lock();
+    }
+
     const bool finished = file_cv_.wait_for(
         lock,
         std::chrono::milliseconds(timeout_ms),
@@ -644,18 +751,7 @@ bool QuicServer::receive_file(const std::string& output_path,
     }
     lock.unlock();
 
-    // The "OK" ack was only queued (SEND_COMPLETE = locally accepted, not yet
-    // delivered). Wait for the client to close the connection — which it does
-    // right after reading the ack — before we let the caller tear msquic down,
-    // otherwise the ack can be lost. Bounded so a vanished peer can't hang us.
-    {
-        std::unique_lock conn_lock(conn_mutex_);
-        conn_cv_.wait_for(
-            conn_lock,
-            std::chrono::seconds(2),
-            [this] { return client_connection_ == nullptr; });
-    }
-
+    drain_connection();
     return true;
 }
 

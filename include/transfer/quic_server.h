@@ -44,9 +44,14 @@ public:
 
     // Block until a client sends one file on a stream. Writes to output_path
     // and verifies SHA-256. Returns false on timeout or hash mismatch.
+    //
+    // on_offer (optional): called on this thread once the file header arrives,
+    // BEFORE any bytes are written. Return true to accept the transfer or false
+    // to reject it. If null, the transfer is auto-accepted.
     bool receive_file(const std::string& output_path,
                       int timeout_ms,
-                      std::function<void()> on_armed = nullptr);
+                      std::function<void()> on_armed = nullptr,
+                      std::function<bool(const FileTransferHeader&)> on_offer = nullptr);
 
     // Result of the most recent receive_file() call.
     const FileReceiveResult& last_file_result() const { return file_result_; }
@@ -87,6 +92,7 @@ private:
     void append_file_bytes(const uint8_t* data, uint32_t length);
     void finish_file_receive(HQUIC stream);
     bool send_file_ack(HQUIC stream, bool ok);
+    bool open_output_file();  // opens file_out_ at file_output_path_
 
     uint16_t port_;
     std::string bind_host_;
@@ -135,6 +141,14 @@ private:
     std::condition_variable file_cv_;
     bool file_done_ = false;
     bool file_ok_ = false;
+    // Accept/reject handshake. The header arrives, then either the callback
+    // thread auto-accepts (no prompt) or receive_file()'s thread prompts the
+    // user and accepts/rejects. Body bytes only flow after ACCEPT is sent.
+    std::function<bool(const FileTransferHeader&)> file_offer_;
+    bool offer_ready_ = false;             // header parsed, awaiting decision
+    std::atomic<bool> file_accepted_{false};
+    bool sending_final_ack_ = false;       // distinguishes the OK/FAIL send
+    HQUIC file_stream_ = nullptr;          // active file stream (for ACCEPT send)
     // Where to write. If file_output_is_dir_ is true, file_output_dir_ holds the
     // target directory and the final file_output_path_ is computed from the
     // sender's (sanitized) filename once the header arrives.

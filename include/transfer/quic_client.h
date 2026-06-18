@@ -34,8 +34,13 @@ public:
                    std::string& out_reply,
                    int timeout_ms);
 
-    // Open a stream, send file header + bytes, wait for server OK/FAIL ack.
+    // Open a stream, send file header, wait for the receiver's ACCEPT/REJECT,
+    // then (if accepted) send bytes and wait for the OK/FAIL ack.
     bool send_file(const std::string& file_path, int timeout_ms);
+
+    // True if the most recent send_file() failed because the receiver rejected
+    // the transfer (as opposed to a connection/IO error).
+    bool was_rejected() const { return rejected_; }
 
 private:
     enum class StreamMode { Echo, File };
@@ -65,6 +70,9 @@ private:
     // Wake send_file() once a chunk send completes or ack arrives.
     void notify_send_waiter();
     void notify_file_waiter(bool success);
+
+    // Record the receiver's accept/reject decision and wake send_file().
+    void resolve_decision(bool accepted);
 
     // Open + start a fresh bidirectional stream into stream_.
     bool open_stream();
@@ -130,6 +138,16 @@ private:
     bool file_done_ = false;
     bool file_ok_ = false;
     std::string file_ack_;
+
+    // Accept/reject phase: after the header is sent, the receiver replies
+    // "ACCEPT\n" or "REJECT\n" before any body bytes are sent.
+    std::atomic<bool> awaiting_decision_{false};
+    std::mutex decision_mutex_;
+    std::condition_variable decision_cv_;
+    bool decision_ready_ = false;
+    bool decision_accepted_ = false;
+    std::string decision_buf_;
+    bool rejected_ = false;  // set when the most recent send_file was rejected
 };
 
 }  // namespace lft

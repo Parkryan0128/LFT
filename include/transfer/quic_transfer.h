@@ -47,6 +47,7 @@ bool is_sha256_hex(std::string_view s);
 
 struct FileReceiveResult {
     bool success = false;
+    bool rejected = false;  // receiver declined the transfer (not an error)
     std::string path;
     std::string expected_hash;
     std::string computed_hash;

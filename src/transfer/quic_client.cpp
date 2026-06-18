@@ -64,6 +64,16 @@ void QuicClient::notify_file_waiter(bool success) {
     file_cv_.notify_one();
 }
 
+void QuicClient::resolve_decision(bool accepted) {
+    awaiting_decision_.store(false);
+    {
+        std::lock_guard lock(decision_mutex_);
+        decision_accepted_ = accepted;
+        decision_ready_ = true;
+    }
+    decision_cv_.notify_one();
+}
+
 // msquic speaks C, so this static wrapper forwards to the member method.
 QUIC_STATUS QuicClient::stream_callback(HQUIC stream,
                                         void* context,
@@ -130,23 +140,30 @@ QUIC_STATUS QuicClient::on_stream_event(HQUIC stream, QUIC_STREAM_EVENT* event) 
         case QUIC_STREAM_EVENT_RECEIVE:
             for (uint32_t i = 0; i < event->RECEIVE.BufferCount; ++i) {
                 const QUIC_BUFFER& buf = event->RECEIVE.Buffers[i];
-                if (stream_mode_ == StreamMode::File) {
-                    file_ack_.append(
-                        reinterpret_cast<const char*>(buf.Buffer),
-                        buf.Length);
+                const char* bytes = reinterpret_cast<const char*>(buf.Buffer);
+                if (stream_mode_ != StreamMode::File) {
+                    echo_reply_.append(bytes, buf.Length);
+                } else if (awaiting_decision_.load()) {
+                    decision_buf_.append(bytes, buf.Length);
                 } else {
-                    echo_reply_.append(
-                        reinterpret_cast<const char*>(buf.Buffer),
-                        buf.Length);
+                    file_ack_.append(bytes, buf.Length);
                 }
+            }
+            // A full ACCEPT/REJECT line resolves the accept-phase wait.
+            if (stream_mode_ == StreamMode::File && awaiting_decision_.load() &&
+                decision_buf_.find('\n') != std::string::npos) {
+                resolve_decision(decision_buf_.starts_with("ACCEPT"));
             }
             return QUIC_STATUS_SUCCESS;
 
         case QUIC_STREAM_EVENT_PEER_SEND_SHUTDOWN:
-            if (stream_mode_ == StreamMode::File) {
-                notify_file_waiter(file_ack_.starts_with("OK"));
-            } else {
+            if (stream_mode_ != StreamMode::File) {
                 notify_echo_waiter(true);
+            } else if (awaiting_decision_.load()) {
+                // FIN during the decision phase (e.g. REJECT closes the stream).
+                resolve_decision(decision_buf_.starts_with("ACCEPT"));
+            } else {
+                notify_file_waiter(file_ack_.starts_with("OK"));
             }
             return QUIC_STATUS_SUCCESS;
 
@@ -470,6 +487,13 @@ bool QuicClient::send_file(const std::string& file_path, int timeout_ms) {
 
     stream_mode_ = StreamMode::File;
     file_ack_.clear();
+    rejected_ = false;
+    decision_buf_.clear();
+    {
+        std::lock_guard lock(decision_mutex_);
+        decision_ready_ = false;
+        decision_accepted_ = false;
+    }
     {
         std::lock_guard lock(file_mutex_);
         file_done_ = false;
@@ -480,7 +504,9 @@ bool QuicClient::send_file(const std::string& file_path, int timeout_ms) {
         return false;
     }
 
-    // Step 1: send the text header (no FIN yet).
+    // Step 1: send the text header (no FIN). Arm the decision phase first so the
+    // receiver's ACCEPT/REJECT reply is routed correctly.
+    awaiting_decision_.store(true);
     if (!stream_send_and_wait(
             stream_,
             header_text.data(),
@@ -490,6 +516,29 @@ bool QuicClient::send_file(const std::string& file_path, int timeout_ms) {
         std::cerr << "QuicClient::send_file: failed to send header\n";
         abort_stream();
         return false;
+    }
+
+    // Step 1b: wait for the receiver to accept or reject before sending bytes.
+    {
+        std::unique_lock lock(decision_mutex_);
+        const bool got = decision_cv_.wait_for(
+            lock,
+            std::chrono::milliseconds(timeout_ms),
+            [this] { return decision_ready_; });
+
+        if (!got) {
+            lock.unlock();
+            std::cerr << "QuicClient::send_file: no accept/reject from receiver\n";
+            abort_stream();
+            return false;
+        }
+        if (!decision_accepted_) {
+            lock.unlock();
+            rejected_ = true;
+            std::cerr << "QuicClient::send_file: receiver rejected the transfer\n";
+            abort_stream();
+            return false;
+        }
     }
 
     // Step 2: send file bytes in chunks; FIN on the last chunk.

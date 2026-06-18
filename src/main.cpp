@@ -211,11 +211,28 @@ int run_recv(const std::vector<std::string_view>& args) {
     // Flush: live status line, and stdout is fully buffered when piped.
     std::cout << "  waiting for sender..." << std::endl;
 
-    const bool ok = server.receive_file(out_dir, kRecvTimeoutMs);
+    // Prompt the user to accept/reject when the file header arrives (before any
+    // bytes are written). Runs on receive_file()'s thread.
+    auto on_offer = [](const lft::FileTransferHeader& header) -> bool {
+        std::cout << "\nIncoming file: \"" << header.name << "\" ("
+                  << header.size << " bytes)\n"
+                  << "Accept? [y/N]: " << std::flush;
+        std::string answer;
+        if (!std::getline(std::cin, answer)) {
+            return false;
+        }
+        return answer == "y" || answer == "Y" || answer == "yes" || answer == "Yes";
+    };
+
+    const bool ok = server.receive_file(out_dir, kRecvTimeoutMs, nullptr, on_offer);
     server.stop();
 
     const lft::FileReceiveResult& result = server.last_file_result();
     if (!ok) {
+        if (result.rejected) {
+            std::cout << "declined the transfer\n";
+            return 0;  // a deliberate choice, not an error
+        }
         std::cerr << "error: receive failed";
         if (!result.error.empty()) {
             std::cerr << ": " << result.error;
@@ -275,10 +292,15 @@ int run_send(const std::vector<std::string_view>& args) {
     }
 
     const bool ok = client.send_file(file, kSendTimeoutMs);
+    const bool rejected = client.was_rejected();
     client.disconnect();
 
     if (!ok) {
-        std::cerr << "error: transfer failed\n";
+        if (rejected) {
+            std::cerr << "transfer rejected by receiver\n";
+        } else {
+            std::cerr << "error: transfer failed\n";
+        }
         return 1;
     }
 
