@@ -444,7 +444,9 @@ bool QuicClient::send_echo(std::string_view message,
     return true;
 }
 
-bool QuicClient::send_file(const std::string& file_path, int timeout_ms) {
+bool QuicClient::send_file(const std::string& file_path,
+                           int timeout_ms,
+                           ProgressFn on_progress) {
     if (!connected_ || connection_ == nullptr || api_ == nullptr) {
         std::cerr << "QuicClient::send_file: not connected\n";
         return false;
@@ -548,6 +550,9 @@ bool QuicClient::send_file(const std::string& file_path, int timeout_ms) {
             abort_stream();
             return false;
         }
+        if (on_progress) {
+            on_progress(0, 0);
+        }
     } else {
         std::ifstream input(file_path, std::ios::binary);
         if (!input) {
@@ -571,6 +576,9 @@ bool QuicClient::send_file(const std::string& file_path, int timeout_ms) {
                 std::cerr << "QuicClient::send_file: failed to send chunk\n";
                 abort_stream();
                 return false;
+            }
+            if (on_progress) {
+                on_progress(sent, file_size);
             }
         }
 

@@ -13,8 +13,10 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -26,6 +28,7 @@
 #include <net/if.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
 namespace {
 
@@ -36,6 +39,42 @@ constexpr int kRecvTimeoutMs = 10 * 60 * 1000;  // 10 minutes
 
 // How long `send` waits for the transfer (handshake + bytes + ack).
 constexpr int kSendTimeoutMs = 5 * 60 * 1000;  // 5 minutes
+
+// Format a byte count as a human-readable string (e.g. "1.5 MB").
+std::string format_bytes(uint64_t n) {
+    if (n < 1024) {
+        return std::to_string(n) + " B";
+    }
+    const char* units[] = {"KB", "MB", "GB", "TB"};
+    double value = static_cast<double>(n);
+    int unit = -1;
+    while (value >= 1024.0 && unit < 3) {
+        value /= 1024.0;
+        ++unit;
+    }
+    std::ostringstream os;
+    os << std::fixed << std::setprecision(1) << value << ' ' << units[unit];
+    return os.str();
+}
+
+// Build a progress callback that redraws a single line in place. No-op when
+// stdout is not a TTY (keeps piped logs clean; the final summary still prints).
+lft::ProgressFn make_progress(std::string label) {
+    if (isatty(fileno(stdout)) == 0) {
+        return nullptr;
+    }
+    return [label = std::move(label), last_pct = -1](uint64_t done,
+                                                     uint64_t total) mutable {
+        const int pct = total == 0 ? 100 : static_cast<int>((done * 100) / total);
+        if (pct == last_pct) {
+            return;  // throttle: only redraw on a percentage change
+        }
+        last_pct = pct;
+        std::cout << '\r' << label << ' ' << pct << "%  ("
+                  << format_bytes(done) << " / " << format_bytes(total) << ")   "
+                  << std::flush;
+    };
+}
 
 // Collect this machine's non-loopback IPv4 addresses, so a `recv` user can tell
 // the sender which IP to target. Best-effort: returns empty on any failure.
@@ -224,7 +263,11 @@ int run_recv(const std::vector<std::string_view>& args) {
         return answer == "y" || answer == "Y" || answer == "yes" || answer == "Yes";
     };
 
-    const bool ok = server.receive_file(out_dir, kRecvTimeoutMs, nullptr, on_offer);
+    const bool ok = server.receive_file(out_dir, kRecvTimeoutMs, nullptr, on_offer,
+                                        make_progress("  receiving"));
+    if (isatty(fileno(stdout)) != 0) {
+        std::cout << "\n";  // end the in-place progress line
+    }
     server.stop();
 
     const lft::FileReceiveResult& result = server.last_file_result();
@@ -291,7 +334,10 @@ int run_send(const std::vector<std::string_view>& args) {
         return 1;
     }
 
-    const bool ok = client.send_file(file, kSendTimeoutMs);
+    const bool ok = client.send_file(file, kSendTimeoutMs, make_progress("  sending"));
+    if (isatty(fileno(stdout)) != 0) {
+        std::cout << "\n";  // end the in-place progress line
+    }
     const bool rejected = client.was_rejected();
     client.disconnect();
 

@@ -1,10 +1,14 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 
 namespace lft {
+
+// Progress callback: (bytes_done, bytes_total). May be called many times.
+using ProgressFn = std::function<void(uint64_t done, uint64_t total)>;
 
 // Address and port for QUIC connections (loopback in Milestone 1).
 struct QuicEndpoint {

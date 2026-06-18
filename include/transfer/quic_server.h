@@ -48,10 +48,12 @@ public:
     // on_offer (optional): called on this thread once the file header arrives,
     // BEFORE any bytes are written. Return true to accept the transfer or false
     // to reject it. If null, the transfer is auto-accepted.
+    // on_progress (optional): called as bytes are written to disk.
     bool receive_file(const std::string& output_path,
                       int timeout_ms,
                       std::function<void()> on_armed = nullptr,
-                      std::function<bool(const FileTransferHeader&)> on_offer = nullptr);
+                      std::function<bool(const FileTransferHeader&)> on_offer = nullptr,
+                      ProgressFn on_progress = nullptr);
 
     // Result of the most recent receive_file() call.
     const FileReceiveResult& last_file_result() const { return file_result_; }
@@ -145,6 +147,7 @@ private:
     // thread auto-accepts (no prompt) or receive_file()'s thread prompts the
     // user and accepts/rejects. Body bytes only flow after ACCEPT is sent.
     std::function<bool(const FileTransferHeader&)> file_offer_;
+    ProgressFn file_progress_;             // optional receive-progress callback
     bool offer_ready_ = false;             // header parsed, awaiting decision
     std::atomic<bool> file_accepted_{false};
     bool sending_final_ack_ = false;       // distinguishes the OK/FAIL send

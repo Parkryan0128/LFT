@@ -9,6 +9,8 @@
 #include <string>
 #include <string_view>
 
+#include "transfer/quic_transfer.h"
+
 namespace lft {
 
 // QUIC client: connects to a server and sends data on a bidirectional stream.
@@ -36,7 +38,10 @@ public:
 
     // Open a stream, send file header, wait for the receiver's ACCEPT/REJECT,
     // then (if accepted) send bytes and wait for the OK/FAIL ack.
-    bool send_file(const std::string& file_path, int timeout_ms);
+    // on_progress (optional): called as bytes are sent.
+    bool send_file(const std::string& file_path,
+                   int timeout_ms,
+                   ProgressFn on_progress = nullptr);
 
     // True if the most recent send_file() failed because the receiver rejected
     // the transfer (as opposed to a connection/IO error).

@@ -370,6 +370,9 @@ void QuicServer::append_file_bytes(const uint8_t* data, uint32_t length) {
             return;
         }
         file_bytes_written_ += to_write;
+        if (file_progress_) {
+            file_progress_(file_bytes_written_, file_header_.size);
+        }
     }
 }
 
@@ -630,7 +633,8 @@ bool QuicServer::wait_for_echo(std::string_view expected_message,
 bool QuicServer::receive_file(const std::string& output_path,
                               int timeout_ms,
                               std::function<void()> on_armed,
-                              std::function<bool(const FileTransferHeader&)> on_offer) {
+                              std::function<bool(const FileTransferHeader&)> on_offer,
+                              ProgressFn on_progress) {
     std::error_code ec;
 
     // Decide whether output_path names a directory (save under the sender's
@@ -659,6 +663,7 @@ bool QuicServer::receive_file(const std::string& output_path,
         file_output_dir_ = looks_like_dir ? output_path : std::string();
         file_output_path_ = looks_like_dir ? std::string() : output_path;
         file_offer_ = std::move(on_offer);
+        file_progress_ = std::move(on_progress);
         offer_ready_ = false;
         file_accepted_.store(false);
         sending_final_ack_ = false;
