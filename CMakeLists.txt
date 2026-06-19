@@ -14,6 +14,15 @@ option(BUILD_MSQUIC_TESTS "Build msquic smoke/integration tests" ON)
 add_subdirectory(src)
 
 if(BUILD_TESTS)
+  include(FetchContent)
+  FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+  )
+  # Windows: keep GTest on the same CRT as the parent project.
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(googletest)
+
   enable_testing()
   add_subdirectory(tests)
 endif()
