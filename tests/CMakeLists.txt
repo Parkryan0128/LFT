@@ -13,6 +13,15 @@ target_include_directories(checkpoint1_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(checkpoint1_test PRIVATE lft_net)
 add_test(NAME Legacy.Checkpoint1_UDP_Loopback COMMAND checkpoint1_test)
 
+# CLI subprocess tests (argument parsing + early validation).
+add_executable(cli_e2e_test e2e/cli_test.cpp)
+target_include_directories(cli_e2e_test PRIVATE ${LFT_TEST_INCLUDE_DIR})
+target_link_libraries(cli_e2e_test PRIVATE GTest::gtest_main)
+add_dependencies(cli_e2e_test lft_cli)
+target_compile_definitions(cli_e2e_test PRIVATE
+  "LFT_CLI_PATH=\"${CMAKE_BINARY_DIR}/src/lft_cli\"")
+gtest_discover_tests(cli_e2e_test)
+
 if(BUILD_MSQUIC_TESTS)
   find_package(Msquic REQUIRED)
 

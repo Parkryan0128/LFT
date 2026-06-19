@@ -205,6 +205,31 @@ TEST(Sha256, FileRoundTrip) {
     std::filesystem::remove(path, ec);
 }
 
+TEST(Protocol, EncodeLowercasesHash) {
+    lft::FileTransferHeader in = make_header(
+        "a.bin",
+        1,
+        "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD");
+    const std::string encoded = lft::encode_file_header(in);
+    EXPECT_NE(encoded.find("hash=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"),
+              std::string::npos);
+}
+
+TEST(Protocol, RejectsEmptySizeField) {
+    lft::FileTransferHeader out;
+    size_t consumed = 0;
+    EXPECT_FALSE(lft::decode_file_header(
+        "LFT/1\nname=a\nsize=\nhash=" + std::string(64, 'a') + "\n\n", out, consumed));
+}
+
+TEST(Protocol, WhitespaceOnlyNameSanitizedToDefault) {
+    lft::FileTransferHeader out;
+    size_t consumed = 0;
+    ASSERT_TRUE(lft::decode_file_header(
+        "LFT/1\nname=   \nsize=1\nhash=" + std::string(64, 'a') + "\n\n", out, consumed));
+    EXPECT_EQ(out.name, "received.bin");
+}
+
 TEST(Sha256, NonexistentFileFails) {
     std::string hash;
     EXPECT_FALSE(lft::sha256_file("/tmp/lft_nonexistent_sha256_input.bin", hash));

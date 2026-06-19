@@ -470,3 +470,199 @@ TEST(QuicEcho, LargeMessage) {
 
     EXPECT_EQ(reply, message);
 }
+
+TEST(QuicEcho, MismatchFails) {
+    const uint16_t port = lft::test::next_port();
+    lft::QuicServer server(port);
+    bool server_ok = true;
+    lft::test::Sync sync;
+
+    std::thread server_thread([&]() {
+        ASSERT_TRUE(server.start(lft::test::kLoopbackHost));
+        std::string reply;
+        server_ok = server.wait_for_echo(
+            "expected",
+            reply,
+            5000,
+            [&] {
+                std::lock_guard lock(sync.mutex);
+                sync.server_ready = true;
+                sync.cv.notify_all();
+            });
+        std::unique_lock lock(sync.mutex);
+        sync.cv.wait(lock, [&] { return sync.client_done; });
+        server.stop();
+    });
+
+    {
+        std::unique_lock lock(sync.mutex);
+        sync.cv.wait(lock, [&] { return sync.server_ready; });
+    }
+
+    lft::QuicClient client;
+    std::string reply;
+    ASSERT_TRUE(client.connect(lft::test::kLoopbackHost, port));
+    EXPECT_FALSE(client.send_echo("different", reply, 5000));
+    client.disconnect();
+
+    {
+        std::lock_guard lock(sync.mutex);
+        sync.client_done = true;
+    }
+    sync.cv.notify_all();
+    server_thread.join();
+
+    EXPECT_FALSE(server_ok);
+}
+
+TEST(QuicConnect, DisconnectThenReconnect) {
+    const uint16_t port_a = lft::test::next_port();
+    const uint16_t port_b = lft::test::next_port();
+
+    lft::QuicServer server_a(port_a);
+    lft::QuicServer server_b(port_b);
+    ASSERT_TRUE(server_a.start(lft::test::kLoopbackHost));
+    ASSERT_TRUE(server_b.start(lft::test::kLoopbackHost));
+
+    lft::QuicClient client;
+    ASSERT_TRUE(client.connect(lft::test::kLoopbackHost, port_a));
+    EXPECT_TRUE(client.is_connected());
+    client.disconnect();
+    EXPECT_FALSE(client.is_connected());
+
+    ASSERT_TRUE(client.connect(lft::test::kLoopbackHost, port_b));
+    EXPECT_TRUE(client.is_connected());
+    client.disconnect();
+
+    server_a.stop();
+    server_b.stop();
+}
+
+TEST(QuicConnect, DoubleDisconnectSafe) {
+    const uint16_t port = lft::test::next_port();
+    lft::QuicServer server(port);
+    ASSERT_TRUE(server.start(lft::test::kLoopbackHost));
+
+    lft::QuicClient client;
+    ASSERT_TRUE(client.connect(lft::test::kLoopbackHost, port));
+    client.disconnect();
+    client.disconnect();
+    EXPECT_FALSE(client.is_connected());
+
+    server.stop();
+}
+
+TEST(QuicFileOutput, ExplicitFilePath) {
+    const auto dir = lft::test::temp_test_dir("lft_explicit_path_test");
+    const auto input = dir / "source.bin";
+    const auto output = dir / "exact_target.bin";
+    ASSERT_TRUE(lft::test::write_file(input, "explicit output path"));
+
+    EXPECT_TRUE(lft::test::run_file_transfer(lft::test::next_port(), input, output));
+    EXPECT_TRUE(fs::exists(output));
+}
+
+TEST(QuicFileOutput, UnicodeFilename) {
+    const auto dir = lft::test::temp_test_dir("lft_unicode_test");
+    const auto input = dir / "café_测试.bin";
+    const auto out_dir = dir / "incoming";
+    fs::create_directories(out_dir);
+    ASSERT_TRUE(lft::test::write_file(input, "unicode name"));
+
+    const uint16_t port = lft::test::next_port();
+    lft::test::ServerSession session(port);
+    session.start_receive(out_dir.string(), [&] {
+        std::lock_guard lock(session.sync.mutex);
+        session.sync.server_ready = true;
+        session.sync.cv.notify_all();
+    });
+    ASSERT_TRUE(session.wait_ready());
+
+    lft::QuicClient client;
+    ASSERT_TRUE(client.connect(lft::test::kLoopbackHost, port));
+    ASSERT_TRUE(client.send_file(input.string(), 5000));
+    client.disconnect();
+
+    session.signal_client_done();
+    session.join();
+
+    const auto output = out_dir / "café_测试.bin";
+    EXPECT_TRUE(fs::exists(output));
+    EXPECT_TRUE(lft::test::hashes_match(input, output));
+}
+
+TEST(QuicFileFailure, UnwritableOutputAutoAcceptFails) {
+    const auto dir = lft::test::temp_test_dir("lft_unwritable_auto_test");
+    const auto input = dir / "payload.bin";
+    const auto ro_dir = dir / "readonly";
+    fs::create_directories(ro_dir);
+    ASSERT_TRUE(lft::test::write_file(input, "cannot write here"));
+
+    const auto output = ro_dir / "blocked.bin";
+    lft::test::ReadOnlyPath guard(ro_dir);
+
+    const uint16_t port = lft::test::next_port();
+    lft::test::ServerSession session(port);
+    session.start_receive(output.string(), [&] {
+        std::lock_guard lock(session.sync.mutex);
+        session.sync.server_ready = true;
+        session.sync.cv.notify_all();
+    });
+    ASSERT_TRUE(session.wait_ready());
+
+    lft::QuicClient client;
+    ASSERT_TRUE(client.connect(lft::test::kLoopbackHost, port));
+    EXPECT_FALSE(client.send_file(input.string(), 5000));
+    client.disconnect();
+
+    session.signal_client_done();
+    session.join();
+
+    EXPECT_FALSE(session.receive_ok);
+    EXPECT_EQ(session.result.error, "failed to open output file");
+    EXPECT_FALSE(fs::exists(output));
+}
+
+TEST(QuicFileFailure, UnwritableOutputRejectsWithPrompt) {
+    const auto dir = lft::test::temp_test_dir("lft_unwritable_prompt_test");
+    const auto input = dir / "payload.bin";
+    const auto ro_dir = dir / "readonly";
+    fs::create_directories(ro_dir);
+    ASSERT_TRUE(lft::test::write_file(input, "cannot write here"));
+
+    const auto output = ro_dir / "blocked.bin";
+    lft::test::ReadOnlyPath guard(ro_dir);
+
+    const uint16_t port = lft::test::next_port();
+    lft::test::ServerSession session(port);
+    session.start_receive(
+        output.string(),
+        [&] {
+            std::lock_guard lock(session.sync.mutex);
+            session.sync.server_ready = true;
+            session.sync.cv.notify_all();
+        },
+        [](const lft::FileTransferHeader&) { return true; });
+
+    ASSERT_TRUE(session.wait_ready());
+
+    lft::QuicClient client;
+    ASSERT_TRUE(client.connect(lft::test::kLoopbackHost, port));
+    EXPECT_FALSE(client.send_file(input.string(), 5000));
+    EXPECT_TRUE(client.was_rejected());
+    client.disconnect();
+
+    session.signal_client_done();
+    session.join();
+
+    EXPECT_FALSE(session.receive_ok);
+    EXPECT_FALSE(fs::exists(output));
+}
+
+TEST(QuicFile, OneByteFile) {
+    const auto dir = lft::test::temp_test_dir("lft_one_byte_test");
+    const auto input = dir / "one.bin";
+    const auto output = dir / "one_out.bin";
+    ASSERT_TRUE(lft::test::write_file(input, "x"));
+    EXPECT_TRUE(lft::test::run_file_transfer(lft::test::next_port(), input, output));
+}

@@ -140,4 +140,29 @@ inline bool run_file_transfer(uint16_t port,
     return ok && std::filesystem::exists(output) && hashes_match(input, output);
 }
 
+class ReadOnlyPath {
+public:
+    explicit ReadOnlyPath(const std::filesystem::path& path) : path_(path) {
+        std::error_code ec;
+        saved_ = std::filesystem::status(path_, ec).permissions();
+        std::filesystem::permissions(
+            path_,
+            std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec,
+            std::filesystem::perm_options::replace,
+            ec);
+    }
+
+    ~ReadOnlyPath() {
+        std::error_code ec;
+        std::filesystem::permissions(path_, saved_, std::filesystem::perm_options::replace, ec);
+    }
+
+    ReadOnlyPath(const ReadOnlyPath&) = delete;
+    ReadOnlyPath& operator=(const ReadOnlyPath&) = delete;
+
+private:
+    std::filesystem::path path_;
+    std::filesystem::perms saved_{};
+};
+
 }  // namespace lft::test

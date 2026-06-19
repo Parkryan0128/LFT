@@ -33,6 +33,13 @@ char to_lower_ascii(char c) {
 std::string sanitize_file_name(std::string_view raw) {
     std::string name = std::filesystem::path(std::string(raw)).filename().string();
 
+    while (!name.empty() && std::isspace(static_cast<unsigned char>(name.front()))) {
+        name.erase(name.begin());
+    }
+    while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back()))) {
+        name.pop_back();
+    }
+
     // Reject names that resolve to nothing useful or to directory traversal.
     if (name.empty() || name == "." || name == "..") {
         return "received.bin";
