@@ -6,12 +6,17 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 
 #include "transfer/quic_transfer.h"
 
 namespace lft {
+
+namespace test {
+struct QuicTestAccess;
+}
 
 // QUIC client: connects to a server and sends data on a bidirectional stream.
 class QuicClient {
@@ -46,6 +51,8 @@ public:
     // True if the most recent send_file() failed because the receiver rejected
     // the transfer (as opposed to a connection/IO error).
     bool was_rejected() const { return rejected_; }
+
+    friend struct test::QuicTestAccess;
 
 private:
     enum class StreamMode { Echo, File };
@@ -91,6 +98,18 @@ private:
     // Abort the current stream (used on a send failure so the peer is notified
     // instead of waiting for a timeout).
     void abort_stream();
+
+    // Shared send path used by send_file() and integration-test helpers.
+    // When bytes_to_send is set, only that many bytes are read from the file
+    // (may differ from header.size for negative tests).
+    bool send_file_internal(const std::string& file_path,
+                            const FileTransferHeader& header,
+                            int timeout_ms,
+                            ProgressFn on_progress,
+                            std::optional<uint64_t> bytes_to_send = std::nullopt);
+
+    // Send raw bytes on a new stream (for malformed-header tests).
+    bool send_raw_stream(std::string_view data, bool fin, int timeout_ms);
 
     std::string host_;
     uint16_t port_ = 0;

@@ -5,11 +5,13 @@
 
 #include "quic_send_buffer.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <vector>
 
 namespace lft {
@@ -480,12 +482,26 @@ bool QuicClient::send_file(const std::string& file_path,
         return false;
     }
 
-    FileTransferHeader header{
+    const FileTransferHeader header{
         .name = std::filesystem::path(file_path).filename().string(),
         .size = file_size,
         .sha256_hex = file_hash,
     };
+    return send_file_internal(file_path, header, timeout_ms, std::move(on_progress));
+}
+
+bool QuicClient::send_file_internal(const std::string& file_path,
+                                    const FileTransferHeader& header,
+                                    int timeout_ms,
+                                    ProgressFn on_progress,
+                                    std::optional<uint64_t> bytes_to_send) {
+    if (!connected_ || connection_ == nullptr || api_ == nullptr) {
+        std::cerr << "QuicClient::send_file: not connected\n";
+        return false;
+    }
+
     const std::string header_text = encode_file_header(header);
+    const uint64_t file_size = bytes_to_send.value_or(header.size);
 
     stream_mode_ = StreamMode::File;
     file_ack_.clear();
@@ -564,7 +580,10 @@ bool QuicClient::send_file(const std::string& file_path,
         std::vector<char> chunk(kFileChunkSize);
         uint64_t sent = 0;
         while (sent < file_size) {
-            input.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+            const uint64_t remaining = file_size - sent;
+            const size_t want = static_cast<size_t>(
+                std::min<uint64_t>(remaining, kFileChunkSize));
+            input.read(chunk.data(), static_cast<std::streamsize>(want));
             const std::streamsize n = input.gcount();
             if (n <= 0) {
                 break;
@@ -578,7 +597,7 @@ bool QuicClient::send_file(const std::string& file_path,
                 return false;
             }
             if (on_progress) {
-                on_progress(sent, file_size);
+                on_progress(sent, header.size);
             }
         }
 
@@ -606,6 +625,39 @@ bool QuicClient::send_file(const std::string& file_path,
 
     std::cout << "QuicClient: sent file \"" << header.name << "\" ("
               << file_size << " bytes)\n";
+    return true;
+}
+
+bool QuicClient::send_raw_stream(std::string_view data, bool fin, int timeout_ms) {
+    if (!connected_ || connection_ == nullptr || api_ == nullptr) {
+        return false;
+    }
+
+    stream_mode_ = StreamMode::File;
+    file_ack_.clear();
+    rejected_ = false;
+    {
+        std::lock_guard lock(file_mutex_);
+        file_done_ = false;
+        file_ok_ = false;
+    }
+
+    if (!open_stream()) {
+        return false;
+    }
+
+    if (!stream_send_and_wait(stream_, data.data(), data.size(), fin, timeout_ms)) {
+        abort_stream();
+        return false;
+    }
+
+    if (fin) {
+        std::unique_lock lock(file_mutex_);
+        file_cv_.wait_for(
+            lock,
+            std::chrono::milliseconds(timeout_ms),
+            [this] { return file_done_; });
+    }
     return true;
 }
 

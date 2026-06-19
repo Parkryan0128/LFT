@@ -39,4 +39,14 @@ if(BUILD_MSQUIC_TESTS)
   target_link_libraries(quic_transfer_test PRIVATE lft_transfer GTest::gtest_main)
   lft_set_msquic_rpath(quic_transfer_test)
   gtest_discover_tests(quic_transfer_test)
+
+  add_executable(quic_transfer_edgecases_test
+    integration/quic_transfer_edgecases_test.cpp
+    integration/quic_test_access.cpp)
+  target_include_directories(quic_transfer_edgecases_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${LFT_TEST_INCLUDE_DIR})
+  target_link_libraries(quic_transfer_edgecases_test PRIVATE lft_transfer GTest::gtest_main)
+  lft_set_msquic_rpath(quic_transfer_edgecases_test)
+  gtest_discover_tests(quic_transfer_edgecases_test)
 endif()

@@ -2,11 +2,14 @@
 
 #include "transfer/quic_client.h"
 #include "transfer/quic_server.h"
+#include "transfer/quic_transfer.h"
 #include "transfer/sha256.h"
 
+#include <atomic>
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -23,6 +26,18 @@ struct Sync {
     bool client_done = false;
 };
 
+inline uint16_t next_port() {
+    static std::atomic<uint16_t> port{15600};
+    return port.fetch_add(1);
+}
+
+inline std::filesystem::path temp_test_dir(const std::string& name) {
+    const auto dir = std::filesystem::temp_directory_path() / name;
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return dir;
+}
+
 inline bool write_file(const std::filesystem::path& path, const std::string& content) {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) {
@@ -38,42 +53,76 @@ inline bool hashes_match(const std::filesystem::path& a, const std::filesystem::
     return sha256_file(a.string(), ha) && sha256_file(b.string(), hb) && ha == hb;
 }
 
-// Run a file transfer over loopback; returns true on success and hash match.
+struct ServerSession {
+    QuicServer server;
+    Sync sync;
+    std::thread thread;
+    bool receive_ok = false;
+    FileReceiveResult result;
+    int timeout_ms = 15000;
+
+    explicit ServerSession(uint16_t port) : server(port) {}
+
+    void start_receive(const std::string& output_path,
+                       std::function<void()> on_armed = nullptr,
+                       std::function<bool(const FileTransferHeader&)> on_offer = nullptr) {
+        thread = std::thread([this, output_path, on_armed = std::move(on_armed),
+                              on_offer = std::move(on_offer)]() mutable {
+            if (!server.start(kLoopbackHost)) {
+                std::lock_guard lock(sync.mutex);
+                sync.server_ready = true;
+                sync.server_failed = true;
+                sync.cv.notify_all();
+                return;
+            }
+
+            receive_ok = server.receive_file(
+                output_path, timeout_ms, std::move(on_armed), std::move(on_offer));
+            result = server.last_file_result();
+
+            std::unique_lock lock(sync.mutex);
+            sync.cv.wait(lock, [&] { return sync.client_done; });
+            lock.unlock();
+            server.stop();
+        });
+    }
+
+    bool wait_ready() {
+        std::unique_lock lock(sync.mutex);
+        sync.cv.wait(lock, [&] { return sync.server_ready; });
+        return !sync.server_failed;
+    }
+
+    void signal_client_done() {
+        {
+            std::lock_guard lock(sync.mutex);
+            sync.client_done = true;
+        }
+        sync.cv.notify_all();
+    }
+
+    void join() {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+};
+
 inline bool run_file_transfer(uint16_t port,
                               const std::filesystem::path& input,
                               const std::filesystem::path& output,
                               int timeout_ms = 15000) {
-    QuicServer server(port);
-    Sync sync;
-
-    std::thread server_thread([&]() {
-        if (!server.start(kLoopbackHost)) {
-            std::lock_guard lock(sync.mutex);
-            sync.server_ready = true;
-            sync.server_failed = true;
-            sync.cv.notify_all();
-            return;
-        }
-
-        server.receive_file(output.string(), timeout_ms, [&] {
-            std::lock_guard lock(sync.mutex);
-            sync.server_ready = true;
-            sync.cv.notify_all();
-        });
-
-        std::unique_lock lock(sync.mutex);
-        sync.cv.wait(lock, [&] { return sync.client_done; });
-        lock.unlock();
-        server.stop();
+    ServerSession session(port);
+    session.timeout_ms = timeout_ms;
+    session.start_receive(output.string(), [&] {
+        std::lock_guard lock(session.sync.mutex);
+        session.sync.server_ready = true;
+        session.sync.cv.notify_all();
     });
 
-    {
-        std::unique_lock lock(sync.mutex);
-        sync.cv.wait(lock, [&] { return sync.server_ready; });
-        if (sync.server_failed) {
-            server_thread.join();
-            return false;
-        }
+    if (!session.wait_ready()) {
+        session.join();
+        return false;
     }
 
     bool ok = true;
@@ -85,12 +134,8 @@ inline bool run_file_transfer(uint16_t port,
     }
     client.disconnect();
 
-    {
-        std::lock_guard lock(sync.mutex);
-        sync.client_done = true;
-    }
-    sync.cv.notify_all();
-    server_thread.join();
+    session.signal_client_done();
+    session.join();
 
     return ok && std::filesystem::exists(output) && hashes_match(input, output);
 }
