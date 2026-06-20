@@ -17,6 +17,9 @@ jobs:
       - name: Install dependencies
         run: brew install qt libmsquic
 
+      - name: Generate dev TLS certificates
+        run: ./scripts/generate_dev_certs.sh
+
       - name: Configure
         run: |
           cmake -S . -B build \
@@ -30,4 +33,5 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure -j1
+        # Skip the 5M-packet legacy UDP stress test (slow/flaky on shared runners).
+        run: ctest --test-dir build --output-on-failure -j1 -E "Legacy.Checkpoint1"

@@ -20,6 +20,9 @@ jobs:
       - name: Install dependencies
         run: brew install qt libmsquic
 
+      - name: Generate dev TLS certificates
+        run: ./scripts/generate_dev_certs.sh
+
       - name: Build
         run: |
           cmake -S . -B build \
