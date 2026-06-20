@@ -4,12 +4,6 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing tag to publish (e.g. v0.1.0)"
-        required: true
-        default: "v0.1.0"
 
 permissions:
   contents: write
@@ -19,19 +13,7 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
-
-      - name: Resolve release tag
-        id: meta
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-          fi
+      - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: brew install qt libmsquic
@@ -45,71 +27,22 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" \
             -DBUILD_GUI=ON \
-            -DBUILD_TESTS=OFF \
-            -DBUILD_MSQUIC_TESTS=OFF
-          cmake --build build --target lft_gui lft_cli
+            -DBUILD_TESTS=OFF
+          cmake --build build --target lft_gui
 
       - name: Bundle Qt into app
         run: "$(brew --prefix qt)/bin/macdeployqt" build/src/gui/lft_gui.app -always-overwrite
 
-      - name: Bundle msquic and OpenSSL
+      - name: Package
         run: |
-          APP="build/src/gui/lft_gui.app"
-          FW="$APP/Contents/Frameworks"
-          BIN="$APP/Contents/MacOS/lft_gui"
-          MSQUIC="$(brew --prefix libmsquic)"
-          OPENSSL="$(brew --prefix openssl@3)"
+          ditto -c -k --keepParent build/src/gui/lft_gui.app LFT-macos.zip
+          hdiutil create -volname "LFT" -srcfolder build/src/gui/lft_gui.app \
+            -ov -format UDZO LFT-macos.dmg
 
-          mkdir -p "$FW"
-          cp "$MSQUIC/lib/libmsquic.dylib" "$FW/"
-          cp "$OPENSSL/lib/libssl.3.dylib" "$FW/"
-          cp "$OPENSSL/lib/libcrypto.3.dylib" "$FW/"
-
-          install_name_tool -add_rpath "@executable_path/../Frameworks" "$BIN" 2>/dev/null || true
-
-          otool -L "$BIN" | tail -n +2 | awk '{print $1}' | while read -r path; do
-            case "$path" in
-              *libmsquic*)
-                install_name_tool -change "$path" "@executable_path/../Frameworks/libmsquic.dylib" "$BIN"
-                ;;
-              *libssl*)
-                install_name_tool -change "$path" "@executable_path/../Frameworks/libssl.3.dylib" "$BIN"
-                ;;
-              *libcrypto*)
-                install_name_tool -change "$path" "@executable_path/../Frameworks/libcrypto.3.dylib" "$BIN"
-                ;;
-            esac
-          done
-
-          otool -L "$BIN"
-
-      - name: Package ZIP
-        run: |
-          TAG="${{ steps.meta.outputs.tag }}"
-          ditto -c -k --keepParent build/src/gui/lft_gui.app "LFT-${TAG}-macos.zip"
-          cp "LFT-${TAG}-macos.zip" LFT-macos.zip
-          ls -la LFT-*.zip
-
-      - name: Package DMG
-        run: |
-          TAG="${{ steps.meta.outputs.tag }}"
-          hdiutil create \
-            -volname "LFT ${TAG}" \
-            -srcfolder build/src/gui/lft_gui.app \
-            -ov -format UDZO \
-            "LFT-${TAG}-macos.dmg"
-          cp "LFT-${TAG}-macos.dmg" LFT-macos.dmg
-          ls -la LFT-*.dmg
-
-      - name: Publish release
+      - name: Publish to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          name: LFT ${{ steps.meta.outputs.tag }}
           files: |
-            LFT-${{ steps.meta.outputs.tag }}-macos.zip
-            LFT-${{ steps.meta.outputs.tag }}-macos.dmg
             LFT-macos.zip
             LFT-macos.dmg
           generate_release_notes: true
-          fail_on_unmatched_files: true
