@@ -1,9 +1,5 @@
 // LFT command-line interface.
 //
-// Milestone 2, Step 1: argument parsing + command dispatch only. The `send` and
-// `recv` handlers are stubs that validate their flags and print what they would
-// do; the transfer engine gets wired in during later steps.
-//
 // Usage:
 //   lft recv --port <n> --out <dir>
 //   lft send --host <ip> --port <n> --file <path>

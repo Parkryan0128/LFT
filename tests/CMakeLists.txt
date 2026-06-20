@@ -7,7 +7,7 @@ include(GoogleTest)
 
 set(LFT_TEST_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
-# Legacy UDP loopback (hand-rolled main, not GTest).
+# Legacy UDP loopback (pre-mDNS; slow — run explicitly with `ctest -R Checkpoint1`).
 add_executable(checkpoint1_test legacy/checkpoint1_test.cpp)
 target_include_directories(checkpoint1_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(checkpoint1_test PRIVATE lft_net)
@@ -40,22 +40,14 @@ if(BUILD_MSQUIC_TESTS)
   lft_set_msquic_rpath(transfer_protocol_test)
   gtest_discover_tests(transfer_protocol_test)
 
-  # Integration: QUIC server/client, echo, file transfer, edge cases.
-  add_executable(quic_transfer_test integration/quic_transfer_test.cpp)
+  # Integration: QUIC connect, echo, file transfer, and edge cases.
+  add_executable(quic_transfer_test
+    integration/quic_transfer_test.cpp
+    integration/quic_test_access.cpp)
   target_include_directories(quic_transfer_test PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${LFT_TEST_INCLUDE_DIR})
   target_link_libraries(quic_transfer_test PRIVATE lft_transfer GTest::gtest_main)
   lft_set_msquic_rpath(quic_transfer_test)
   gtest_discover_tests(quic_transfer_test)
-
-  add_executable(quic_transfer_edgecases_test
-    integration/quic_transfer_edgecases_test.cpp
-    integration/quic_test_access.cpp)
-  target_include_directories(quic_transfer_edgecases_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${LFT_TEST_INCLUDE_DIR})
-  target_link_libraries(quic_transfer_edgecases_test PRIVATE lft_transfer GTest::gtest_main)
-  lft_set_msquic_rpath(quic_transfer_edgecases_test)
-  gtest_discover_tests(quic_transfer_edgecases_test)
 endif()

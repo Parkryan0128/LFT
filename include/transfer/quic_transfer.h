@@ -10,7 +10,7 @@ namespace lft {
 // Progress callback: (bytes_done, bytes_total). May be called many times.
 using ProgressFn = std::function<void(uint64_t done, uint64_t total)>;
 
-// Address and port for QUIC connections (loopback in Milestone 1).
+// Address and port for QUIC connections.
 struct QuicEndpoint {
     std::string host;
     uint16_t port = 0;
@@ -28,7 +28,7 @@ struct QuicEchoResult {
 // that never sends the terminating blank line).
 inline constexpr size_t kMaxHeaderBytes = 64 * 1024;
 
-// Step 6 wire format (text header, then raw file bytes):
+// Wire format (text header, then raw file bytes):
 //
 //   LFT/1\n
 //   name=<filename>\n

@@ -53,6 +53,115 @@ inline bool hashes_match(const std::filesystem::path& a, const std::filesystem::
     return sha256_file(a.string(), ha) && sha256_file(b.string(), hb) && ha == hb;
 }
 
+// Server waiting for a client connection (no stream I/O yet).
+struct ListenSession {
+    QuicServer server;
+    Sync sync;
+    std::thread thread;
+
+    explicit ListenSession(uint16_t port) : server(port) {}
+
+    void start() {
+        thread = std::thread([this]() {
+            const bool ok = server.start(kLoopbackHost);
+            {
+                std::lock_guard lock(sync.mutex);
+                sync.server_ready = true;
+                sync.server_failed = !ok;
+            }
+            sync.cv.notify_all();
+            if (!ok) {
+                return;
+            }
+
+            std::unique_lock lock(sync.mutex);
+            sync.cv.wait(lock, [&] { return sync.client_done; });
+            lock.unlock();
+            server.stop();
+        });
+    }
+
+    bool wait_ready() {
+        std::unique_lock lock(sync.mutex);
+        sync.cv.wait(lock, [&] { return sync.server_ready; });
+        return !sync.server_failed;
+    }
+
+    void signal_client_done() {
+        {
+            std::lock_guard lock(sync.mutex);
+            sync.client_done = true;
+        }
+        sync.cv.notify_all();
+    }
+
+    void join() {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+};
+
+// Server running wait_for_echo on a background thread.
+struct EchoSession {
+    QuicServer server;
+    Sync sync;
+    std::thread thread;
+    bool echo_ok = false;
+    std::string server_reply;
+    int timeout_ms = 5000;
+
+    explicit EchoSession(uint16_t port) : server(port) {}
+
+    void start(std::string_view expected) {
+        thread = std::thread([this, expected]() {
+            if (!server.start(kLoopbackHost)) {
+                std::lock_guard lock(sync.mutex);
+                sync.server_ready = true;
+                sync.server_failed = true;
+                sync.cv.notify_all();
+                return;
+            }
+
+            echo_ok = server.wait_for_echo(
+                expected,
+                server_reply,
+                timeout_ms,
+                [this] {
+                    std::lock_guard lock(sync.mutex);
+                    sync.server_ready = true;
+                    sync.cv.notify_all();
+                });
+
+            std::unique_lock lock(sync.mutex);
+            sync.cv.wait(lock, [&] { return sync.client_done; });
+            lock.unlock();
+            server.stop();
+        });
+    }
+
+    bool wait_ready() {
+        std::unique_lock lock(sync.mutex);
+        sync.cv.wait(lock, [&] { return sync.server_ready; });
+        return !sync.server_failed;
+    }
+
+    void signal_client_done() {
+        {
+            std::lock_guard lock(sync.mutex);
+            sync.client_done = true;
+        }
+        sync.cv.notify_all();
+    }
+
+    void join() {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+};
+
+// Server running receive_file on a background thread.
 struct ServerSession {
     QuicServer server;
     Sync sync;
@@ -77,7 +186,19 @@ struct ServerSession {
             }
 
             receive_ok = server.receive_file(
-                output_path, timeout_ms, std::move(on_armed), std::move(on_offer));
+                output_path,
+                timeout_ms,
+                [this, on_armed = std::move(on_armed)]() {
+                    {
+                        std::lock_guard lock(sync.mutex);
+                        sync.server_ready = true;
+                    }
+                    sync.cv.notify_all();
+                    if (on_armed) {
+                        on_armed();
+                    }
+                },
+                std::move(on_offer));
             result = server.last_file_result();
 
             std::unique_lock lock(sync.mutex);
@@ -114,11 +235,7 @@ inline bool run_file_transfer(uint16_t port,
                               int timeout_ms = 15000) {
     ServerSession session(port);
     session.timeout_ms = timeout_ms;
-    session.start_receive(output.string(), [&] {
-        std::lock_guard lock(session.sync.mutex);
-        session.sync.server_ready = true;
-        session.sync.cv.notify_all();
-    });
+    session.start_receive(output.string());
 
     if (!session.wait_ready()) {
         session.join();
