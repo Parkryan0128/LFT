@@ -21,3 +21,18 @@ target_link_libraries(lft_cli PRIVATE lft_net lft_transfer)
 
 # Embed the msquic/OpenSSL rpath so the CLI runs without DYLD overrides.
 lft_set_msquic_rpath(lft_cli)
+
+if(BUILD_GUI)
+  if(APPLE)
+    execute_process(
+      COMMAND brew --prefix qt
+      OUTPUT_VARIABLE LFT_QT_PREFIX
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+    )
+    if(LFT_QT_PREFIX)
+      list(APPEND CMAKE_PREFIX_PATH "${LFT_QT_PREFIX}")
+    endif()
+  endif()
+  add_subdirectory(gui)
+endif()
