@@ -5,6 +5,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish (e.g. v0.1.0)"
+        required: true
+        default: "v0.1.0"
 
 permissions:
   contents: write
@@ -16,6 +21,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+
+      - name: Resolve release tag
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Install dependencies
         run: brew install qt libmsquic
@@ -69,24 +85,31 @@ jobs:
 
       - name: Package ZIP
         run: |
-          ditto -c -k --keepParent build/src/gui/lft_gui.app "LFT-${GITHUB_REF_NAME}-macos.zip"
-          cp "LFT-${GITHUB_REF_NAME}-macos.zip" LFT-macos.zip
+          TAG="${{ steps.meta.outputs.tag }}"
+          ditto -c -k --keepParent build/src/gui/lft_gui.app "LFT-${TAG}-macos.zip"
+          cp "LFT-${TAG}-macos.zip" LFT-macos.zip
+          ls -la LFT-*.zip
 
       - name: Package DMG
         run: |
+          TAG="${{ steps.meta.outputs.tag }}"
           hdiutil create \
-            -volname "LFT ${GITHUB_REF_NAME}" \
+            -volname "LFT ${TAG}" \
             -srcfolder build/src/gui/lft_gui.app \
             -ov -format UDZO \
-            "LFT-${GITHUB_REF_NAME}-macos.dmg"
-          cp "LFT-${GITHUB_REF_NAME}-macos.dmg" LFT-macos.dmg
+            "LFT-${TAG}-macos.dmg"
+          cp "LFT-${TAG}-macos.dmg" LFT-macos.dmg
+          ls -la LFT-*.dmg
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: LFT ${{ steps.meta.outputs.tag }}
           files: |
-            LFT-${{ github.ref_name }}-macos.zip
-            LFT-${{ github.ref_name }}-macos.dmg
+            LFT-${{ steps.meta.outputs.tag }}-macos.zip
+            LFT-${{ steps.meta.outputs.tag }}-macos.dmg
             LFT-macos.zip
             LFT-macos.dmg
           generate_release_notes: true
+          fail_on_unmatched_files: true
