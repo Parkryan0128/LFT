@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install qt libmsquic
+
+      - name: Build
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" \
+            -DBUILD_GUI=ON \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_MSQUIC_TESTS=OFF
+          cmake --build build --target lft_gui lft_cli
+
+      - name: Bundle Qt into app
+        run: "$(brew --prefix qt)/bin/macdeployqt" build/src/gui/lft_gui.app -always-overwrite
+
+      - name: Bundle msquic and OpenSSL
+        run: |
+          APP="build/src/gui/lft_gui.app"
+          FW="$APP/Contents/Frameworks"
+          BIN="$APP/Contents/MacOS/lft_gui"
+          MSQUIC="$(brew --prefix libmsquic)"
+          OPENSSL="$(brew --prefix openssl@3)"
+
+          mkdir -p "$FW"
+          cp "$MSQUIC/lib/libmsquic.dylib" "$FW/"
+          cp "$OPENSSL/lib/libssl.3.dylib" "$FW/"
+          cp "$OPENSSL/lib/libcrypto.3.dylib" "$FW/"
+
+          install_name_tool -add_rpath "@executable_path/../Frameworks" "$BIN" 2>/dev/null || true
+
+          otool -L "$BIN" | tail -n +2 | awk '{print $1}' | while read -r path; do
+            case "$path" in
+              *libmsquic*)
+                install_name_tool -change "$path" "@executable_path/../Frameworks/libmsquic.dylib" "$BIN"
+                ;;
+              *libssl*)
+                install_name_tool -change "$path" "@executable_path/../Frameworks/libssl.3.dylib" "$BIN"
+                ;;
+              *libcrypto*)
+                install_name_tool -change "$path" "@executable_path/../Frameworks/libcrypto.3.dylib" "$BIN"
+                ;;
+            esac
+          done
+
+          otool -L "$BIN"
+
+      - name: Package ZIP
+        run: ditto -c -k --keepParent build/src/gui/lft_gui.app "LFT-${GITHUB_REF_NAME}-macos.zip"
+
+      - name: Package DMG
+        run: |
+          hdiutil create \
+            -volname "LFT ${GITHUB_REF_NAME}" \
+            -srcfolder build/src/gui/lft_gui.app \
+            -ov -format UDZO \
+            "LFT-${GITHUB_REF_NAME}-macos.dmg"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            LFT-${{ github.ref_name }}-macos.zip
+            LFT-${{ github.ref_name }}-macos.dmg
+          generate_release_notes: true
