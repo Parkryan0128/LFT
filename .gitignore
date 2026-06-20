@@ -1,6 +1,12 @@
 # Build output
 /build/
 
+# Qt (MOC/UIC/RCC autogen + Qt Creator; out-of-tree build keeps most of this in /build/)
+*_autogen/
+*.pro.user
+CMakeLists.txt.user
+*.autosave
+
 # Editor files
 .vscode/
 *.swp
