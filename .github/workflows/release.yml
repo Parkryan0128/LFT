@@ -65,7 +65,9 @@ jobs:
           otool -L "$BIN"
 
       - name: Package ZIP
-        run: ditto -c -k --keepParent build/src/gui/lft_gui.app "LFT-${GITHUB_REF_NAME}-macos.zip"
+        run: |
+          ditto -c -k --keepParent build/src/gui/lft_gui.app "LFT-${GITHUB_REF_NAME}-macos.zip"
+          cp "LFT-${GITHUB_REF_NAME}-macos.zip" LFT-macos.zip
 
       - name: Package DMG
         run: |
@@ -74,6 +76,7 @@ jobs:
             -srcfolder build/src/gui/lft_gui.app \
             -ov -format UDZO \
             "LFT-${GITHUB_REF_NAME}-macos.dmg"
+          cp "LFT-${GITHUB_REF_NAME}-macos.dmg" LFT-macos.dmg
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -81,4 +84,6 @@ jobs:
           files: |
             LFT-${{ github.ref_name }}-macos.zip
             LFT-${{ github.ref_name }}-macos.dmg
+            LFT-macos.zip
+            LFT-macos.dmg
           generate_release_notes: true

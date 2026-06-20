@@ -259,10 +259,26 @@ h2 {
   background: #333;
 }
 
+.btn-secondary {
+  background: #fff;
+  color: #111;
+  border-color: #111;
+}
+
+.btn-secondary:hover {
+  background: #f0f0f0;
+}
+
 .btn-disabled {
   background: #e8e8e8;
   color: #888;
   cursor: not-allowed;
+}
+
+.release-version {
+  margin-top: 0.75rem;
+  font-size: 0.9rem;
+  color: #666;
 }
 
 pre {

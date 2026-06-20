@@ -39,18 +39,24 @@
 
     <section id="download">
       <h2>Download</h2>
-      <p class="note">
-        Installers will appear here after the first release. Until then, build from source
-        (see below) or follow
-        <a href="https://github.com/Parkryan0128/LFT/releases">GitHub Releases</a>.
+      <p class="note" id="release-note">
+        macOS builds are published on GitHub when a release is tagged (e.g. <code>v0.1.0</code>).
+        CI on every push only runs tests — installers come from
+        <a href="https://github.com/Parkryan0128/LFT/releases">Releases</a>.
       </p>
       <div class="downloads">
-        <a class="btn btn-primary" href="https://github.com/Parkryan0128/LFT/releases">
-          macOS (coming soon)
+        <a class="btn btn-primary" id="macos-dmg"
+           href="https://github.com/Parkryan0128/LFT/releases/latest/download/LFT-macos.dmg">
+          macOS (.dmg)
+        </a>
+        <a class="btn btn-secondary" id="macos-zip"
+           href="https://github.com/Parkryan0128/LFT/releases/latest/download/LFT-macos.zip">
+          macOS (.zip)
         </a>
         <span class="btn btn-disabled">Windows (coming soon)</span>
         <span class="btn btn-disabled">Linux (coming soon)</span>
       </div>
+      <p class="release-version" id="release-version" hidden></p>
     </section>
 
     <section id="how">
@@ -109,5 +115,34 @@ cmake --build build
       · QUIC + mDNS · C++20
     </p>
   </footer>
+  <script>
+    (function () {
+      const versionEl = document.getElementById("release-version");
+      const noteEl = document.getElementById("release-note");
+      const dmgEl = document.getElementById("macos-dmg");
+      const zipEl = document.getElementById("macos-zip");
+
+      fetch("https://api.github.com/repos/Parkryan0128/LFT/releases/latest")
+        .then(function (res) {
+          if (!res.ok) throw new Error("no release");
+          return res.json();
+        })
+        .then(function (data) {
+          versionEl.hidden = false;
+          versionEl.textContent = "Latest release: " + data.tag_name;
+        })
+        .catch(function () {
+          noteEl.textContent =
+            "No macOS release yet. Push a tag like v0.1.0 to trigger the release workflow, " +
+            "or build from source below.";
+          dmgEl.classList.remove("btn-primary");
+          dmgEl.classList.add("btn-disabled");
+          dmgEl.removeAttribute("href");
+          zipEl.classList.remove("btn-secondary");
+          zipEl.classList.add("btn-disabled");
+          zipEl.removeAttribute("href");
+        });
+    })();
+  </script>
 </body>
 </html>
