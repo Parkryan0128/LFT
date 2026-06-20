@@ -1,8 +1,14 @@
-# Legacy UDP socket layer (used for mDNS in a later milestone).
+# LAN networking: legacy UDP socket helper + mDNS/DNS-SD discovery.
 add_library(lft_net
   net/udp_socket.cpp
+  net/mdns.cpp
 )
 target_include_directories(lft_net PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
+# DNS-SD (Bonjour) is in libSystem on macOS; Linux needs avahi-compat-libdns_sd.
+if(NOT APPLE)
+  target_link_libraries(lft_net PUBLIC dns_sd)
+endif()
 
 # QUIC file transfer engine (Milestone 1+).
 add_subdirectory(transfer)

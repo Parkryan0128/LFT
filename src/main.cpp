@@ -1,8 +1,11 @@
 // LFT command-line interface.
 //
 // Usage:
-//   lft recv --port <n> --out <dir>
+//   lft recv --port <n> --out <dir> [--name <device>]
+//   lft send --to <device> --file <path>
 //   lft send --host <ip> --port <n> --file <path>
+//   lft list
+#include "net/mdns.h"
 #include "transfer/quic_client.h"
 #include "transfer/quic_server.h"
 
@@ -35,6 +38,9 @@ constexpr int kRecvTimeoutMs = 10 * 60 * 1000;  // 10 minutes
 
 // How long `send` waits for the transfer (handshake + bytes + ack).
 constexpr int kSendTimeoutMs = 5 * 60 * 1000;  // 5 minutes
+
+// How long discovery (`list`, `send --to`) browses the LAN before giving up.
+constexpr int kDiscoveryTimeoutMs = 3000;
 
 // Format a byte count as a human-readable string (e.g. "1.5 MB").
 std::string format_bytes(uint64_t n) {
@@ -97,19 +103,33 @@ std::vector<std::string> local_ipv4s() {
     return result;
 }
 
+// This machine's hostname, used as the default advertised name for display.
+std::string local_hostname() {
+    char buf[256] = {};
+    if (gethostname(buf, sizeof(buf) - 1) != 0) {
+        return "this device";
+    }
+    return buf;
+}
+
 void print_usage(std::ostream& os) {
     os << "LFT — LAN File Transfer\n\n"
        << "Usage:\n"
-       << "  lft recv --port <n> --out <dir>\n"
-       << "  lft send --host <ip> --port <n> --file <path>\n\n"
+       << "  lft recv --out <dir> [--port <n>] [--name <device>]\n"
+       << "  lft send --to <device> --file <path>\n"
+       << "  lft send --host <ip> --file <path> [--port <n>]\n"
+       << "  lft list\n\n"
        << "Commands:\n"
        << "  recv    Receive one file and save it into <dir>.\n"
-       << "  send    Send one file to a receiver at <ip>:<port>.\n\n"
+       << "  send    Send one file to a discovered device (--to) or an IP (--host).\n"
+       << "  list    Show LFT receivers discovered on the LAN.\n\n"
        << "Options:\n"
+       << "  --to <device>  Receiver device name as shown by `lft list` (send only).\n"
        << "  --host <ip>    Receiver IP address (send only).\n"
        << "  --port <n>     UDP port (default " << kDefaultPort << ").\n"
        << "  --file <path>  File to send (send only).\n"
        << "  --out <dir>    Directory to save into (recv only).\n"
+       << "  --name <name>  Advertised device name (recv only; default: hostname).\n"
        << "  -h, --help     Show this help.\n";
 }
 
@@ -198,7 +218,7 @@ int run_recv(const std::vector<std::string_view>& args) {
     }
     const Flags& flags = *parsed;
 
-    if (!reject_unknown_flags(flags, {"port", "out"})) {
+    if (!reject_unknown_flags(flags, {"port", "out", "name"})) {
         return 2;
     }
 
@@ -233,11 +253,24 @@ int run_recv(const std::vector<std::string_view>& args) {
 
     std::cout << "[recv] listening on port " << *port << " (all interfaces), "
               << "saving into \"" << out_dir << "\"\n";
+
+    // Advertise on the LAN so senders can find us with `lft send --to <name>`.
+    // Best-effort: if the responder is unavailable, manual IP still works.
+    const std::string advertised_name = flag_or(flags, "name", "");
+    lft::MdnsAdvertiser advertiser;
+    if (advertiser.start(advertised_name, *port)) {
+        const std::string shown = advertised_name.empty() ? local_hostname() : advertised_name;
+        std::cout << "  discoverable as \"" << shown << "\" — on another machine, run:\n"
+                  << "    lft send --to \"" << shown << "\" --file <path>\n";
+    } else {
+        std::cout << "  (LAN discovery unavailable; use manual IP below)\n";
+    }
+
     const std::vector<std::string> ips = local_ipv4s();
     if (ips.empty()) {
         std::cout << "  (could not determine this machine's LAN IP)\n";
     } else {
-        std::cout << "  on another machine, run:\n";
+        std::cout << "  or by IP:\n";
         for (const std::string& ip : ips) {
             std::cout << "    lft send --host " << ip << " --port " << *port
                       << " --file <path>\n";
@@ -292,19 +325,17 @@ int run_send(const std::vector<std::string_view>& args) {
     }
     const Flags& flags = *parsed;
 
-    if (!reject_unknown_flags(flags, {"host", "port", "file"})) {
+    if (!reject_unknown_flags(flags, {"host", "to", "port", "file"})) {
         return 2;
     }
 
     const auto host_it = flags.find("host");
-    if (host_it == flags.end() || host_it->second.empty()) {
-        std::cerr << "error: send requires --host <ip>\n";
-        return 2;
-    }
+    const auto to_it = flags.find("to");
+    const bool has_host = host_it != flags.end() && !host_it->second.empty();
+    const bool has_to = to_it != flags.end() && !to_it->second.empty();
 
-    const auto port = parse_port(flag_or(flags, "port", std::to_string(kDefaultPort)));
-    if (!port) {
-        std::cerr << "error: --port must be a number in 1..65535\n";
+    if (has_host == has_to) {
+        std::cerr << "error: send requires exactly one of --to <device> or --host <ip>\n";
         return 2;
     }
 
@@ -313,20 +344,45 @@ int run_send(const std::vector<std::string_view>& args) {
         std::cerr << "error: send requires --file <path>\n";
         return 2;
     }
-    const std::string& host = host_it->second;
     const std::string& file = file_it->second;
 
-    // Fail early with a clear message before opening a connection.
+    // Fail early with a clear message before discovery/connection.
     std::error_code ec;
     if (!std::filesystem::exists(file, ec) || std::filesystem::is_directory(file, ec)) {
         std::cerr << "error: file not found: " << file << "\n";
         return 1;
     }
 
+    // Resolve the target: either a discovered device name (--to) or a literal IP
+    // (--host). Discovery supplies the port; --port only applies to --host.
+    std::string host;
+    uint16_t target_port = 0;
+    if (has_to) {
+        const std::string& name = to_it->second;
+        std::cout << "[send] searching for \"" << name << "\" on the LAN..." << std::endl;
+        lft::MdnsBrowser browser;
+        const auto peer = browser.find_by_name(name, kDiscoveryTimeoutMs);
+        if (!peer) {
+            std::cerr << "error: could not find device \"" << name
+                      << "\" on the LAN (try `lft list`)\n";
+            return 1;
+        }
+        host = peer->host;
+        target_port = peer->port;
+    } else {
+        const auto port = parse_port(flag_or(flags, "port", std::to_string(kDefaultPort)));
+        if (!port) {
+            std::cerr << "error: --port must be a number in 1..65535\n";
+            return 2;
+        }
+        host = host_it->second;
+        target_port = *port;
+    }
+
     lft::QuicClient client;
-    std::cout << "[send] connecting to " << host << ':' << *port << "..." << std::endl;
-    if (!client.connect(host, *port)) {
-        std::cerr << "error: could not connect to " << host << ':' << *port << "\n";
+    std::cout << "[send] connecting to " << host << ':' << target_port << "..." << std::endl;
+    if (!client.connect(host, target_port)) {
+        std::cerr << "error: could not connect to " << host << ':' << target_port << "\n";
         return 1;
     }
 
@@ -346,8 +402,35 @@ int run_send(const std::vector<std::string_view>& args) {
         return 1;
     }
 
-    std::cout << "sent \"" << file << "\" to " << host << ':' << *port
+    std::cout << "sent \"" << file << "\" to " << host << ':' << target_port
               << " (SHA-256 verified by receiver)\n";
+    return 0;
+}
+
+int run_list(const std::vector<std::string_view>& args) {
+    auto parsed = parse_flags(args);
+    if (!parsed) {
+        return 2;
+    }
+    if (!reject_unknown_flags(*parsed, {})) {
+        return 2;
+    }
+
+    std::cout << "Searching for LFT receivers on the LAN..." << std::endl;
+    lft::MdnsBrowser browser;
+    const std::vector<lft::PeerInfo> peers = browser.browse(kDiscoveryTimeoutMs);
+
+    if (peers.empty()) {
+        std::cout << "No receivers found. Make sure the other device is running "
+                  << "`lft recv`.\n";
+        return 0;
+    }
+
+    std::cout << "Found " << peers.size() << " receiver(s):\n";
+    for (const lft::PeerInfo& peer : peers) {
+        std::cout << "  \"" << peer.name << "\"  (" << peer.host << ':' << peer.port << ")\n"
+                  << "    lft send --to \"" << peer.name << "\" --file <path>\n";
+    }
     return 0;
 }
 
@@ -369,6 +452,9 @@ int main(int argc, char** argv) {
     }
     if (command == "send") {
         return run_send(rest);
+    }
+    if (command == "list") {
+        return run_list(rest);
     }
 
     std::cerr << "error: unknown command \"" << command << "\"\n\n";
