@@ -118,9 +118,6 @@ cmake --build build
   <script>
     (function () {
       const versionEl = document.getElementById("release-version");
-      const noteEl = document.getElementById("release-note");
-      const dmgEl = document.getElementById("macos-dmg");
-      const zipEl = document.getElementById("macos-zip");
 
       fetch("https://api.github.com/repos/Parkryan0128/LFT/releases/latest")
         .then(function (res) {
@@ -132,15 +129,10 @@ cmake --build build
           versionEl.textContent = "Latest release: " + data.tag_name;
         })
         .catch(function () {
-          noteEl.textContent =
-            "No macOS release yet. Push a tag like v0.1.0 to trigger the release workflow, " +
-            "or build from source below.";
-          dmgEl.classList.remove("btn-primary");
-          dmgEl.classList.add("btn-disabled");
-          dmgEl.removeAttribute("href");
-          zipEl.classList.remove("btn-secondary");
-          zipEl.classList.add("btn-disabled");
-          zipEl.removeAttribute("href");
+          // Keep download links active — they work once a release exists even if this API call fails.
+          versionEl.hidden = false;
+          versionEl.textContent =
+            "See all releases on GitHub if the download does not start.";
         });
     })();
   </script>
