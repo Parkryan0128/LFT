@@ -11,7 +11,6 @@ permissions:
 jobs:
   macos:
     runs-on: macos-latest
-
     steps:
       - uses: actions/checkout@v4
 
@@ -23,22 +22,18 @@ jobs:
 
       - name: Build
         run: |
-          cmake -S . -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" \
-            -DBUILD_GUI=ON \
-            -DBUILD_TESTS=OFF
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" -DBUILD_GUI=ON -DBUILD_TESTS=OFF
           cmake --build build --target lft_gui
 
       - name: Bundle Qt into app
         run: |
-          "$(brew --prefix qt)/bin/macdeployqt" build/src/gui/lft_gui.app -always-overwrite
+          QT_BIN="$(brew --prefix qt)/bin/macdeployqt"
+          "$QT_BIN" build/src/gui/lft_gui.app -always-overwrite
 
       - name: Package
         run: |
           ditto -c -k --keepParent build/src/gui/lft_gui.app LFT-macos.zip
-          hdiutil create -volname "LFT" -srcfolder build/src/gui/lft_gui.app \
-            -ov -format UDZO LFT-macos.dmg
+          hdiutil create -volname LFT -srcfolder build/src/gui/lft_gui.app -ov -format UDZO LFT-macos.dmg
 
       - name: Publish to GitHub Releases
         uses: softprops/action-gh-release@v2
