@@ -29,11 +29,18 @@ RecvWorker::RecvWorker(RecvPage* page) : page_(page) {}
 
 void RecvWorker::run(QString out_dir, QString device_name, quint16 port) {
     std::error_code ec;
-    const std::string out = out_dir.toStdString();
-    std::filesystem::create_directories(out, ec);
-    if (!std::filesystem::is_directory(out, ec)) {
+    std::filesystem::path out_path(out_dir.toStdString());
+    out_path = std::filesystem::absolute(out_path, ec);
+    std::filesystem::create_directories(out_path, ec);
+    if (!std::filesystem::is_directory(out_path, ec)) {
         emit finished(false, QString("Save folder is not valid: %1").arg(out_dir));
         return;
+    }
+
+    // Trailing separator ensures receive_file() always treats this as a directory.
+    std::string out = out_path.string();
+    if (out.empty() || (out.back() != '/' && out.back() != '\\')) {
+        out.push_back('/');
     }
 
     auto server = std::make_unique<lft::QuicServer>(port);
@@ -93,8 +100,8 @@ void RecvWorker::run(QString out_dir, QString device_name, quint16 port) {
         return;
     }
 
+    const QString saved_path = QString::fromStdString(result.path);
     emit finished(true,
-                  QString("Saved \"%1\" (%2, SHA-256 verified)")
-                      .arg(QString::fromStdString(result.path))
-                      .arg(lft::gui::formatBytes(result.bytes_received)));
+                  QString("Saved to:\n%1\n\n(%2, SHA-256 verified)")
+                      .arg(saved_path, lft::gui::formatBytes(result.bytes_received)));
 }

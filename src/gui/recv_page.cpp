@@ -4,7 +4,9 @@
 #include "gui/gui_constants.h"
 #include "gui/recv_worker.h"
 
+#include <QDesktopServices>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -13,6 +15,7 @@
 #include <QPushButton>
 #include <QStandardPaths>
 #include <QThread>
+#include <QUrl>
 #include <QVBoxLayout>
 
 RecvPage::RecvPage(QWidget* parent) : QWidget(parent) {
@@ -145,10 +148,36 @@ void RecvPage::onFinished(bool ok, const QString& message) {
 
     if (!ok) {
         QMessageBox::warning(this, "Receive", message);
-    } else if (!message.contains("declined", Qt::CaseInsensitive)) {
-        QMessageBox::information(this, "Receive", message);
-        emit backRequested();
+        return;
     }
+    if (message.contains("declined", Qt::CaseInsensitive)) {
+        return;
+    }
+
+    QMessageBox box(this);
+    box.setWindowTitle("Receive");
+    box.setIcon(QMessageBox::Information);
+    box.setText("Transfer complete");
+    box.setInformativeText(message);
+
+    QPushButton* reveal_btn = nullptr;
+#if defined(Q_OS_MAC)
+    reveal_btn = box.addButton("Show in Finder", QMessageBox::ActionRole);
+#endif
+    box.addButton(QMessageBox::Ok);
+
+    box.exec();
+
+#if defined(Q_OS_MAC)
+    if (reveal_btn != nullptr && box.clickedButton() == reveal_btn) {
+        const QString path = message.section('\n', 1, 1).trimmed();
+        if (!path.isEmpty()) {
+            QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+        }
+    }
+#endif
+
+    emit backRequested();
 }
 
 void RecvPage::setBusy(bool busy) {
