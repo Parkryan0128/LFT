@@ -40,15 +40,6 @@ void QuicClient::notify_connect_waiter(bool success) {
     connect_cv_.notify_one();
 }
 
-void QuicClient::notify_echo_waiter(bool success) {
-    {
-        std::lock_guard lock(echo_mutex_);
-        echo_done_ = true;
-        echo_ok_ = success;
-    }
-    echo_cv_.notify_one();
-}
-
 void QuicClient::notify_send_waiter() {
     {
         std::lock_guard lock(send_mutex_);
@@ -143,26 +134,20 @@ QUIC_STATUS QuicClient::on_stream_event(HQUIC stream, QUIC_STREAM_EVENT* event) 
             for (uint32_t i = 0; i < event->RECEIVE.BufferCount; ++i) {
                 const QUIC_BUFFER& buf = event->RECEIVE.Buffers[i];
                 const char* bytes = reinterpret_cast<const char*>(buf.Buffer);
-                if (stream_mode_ != StreamMode::File) {
-                    echo_reply_.append(bytes, buf.Length);
-                } else if (awaiting_decision_.load()) {
+                if (awaiting_decision_.load()) {
                     decision_buf_.append(bytes, buf.Length);
                 } else {
                     file_ack_.append(bytes, buf.Length);
                 }
             }
-            // A full ACCEPT/REJECT line resolves the accept-phase wait.
-            if (stream_mode_ == StreamMode::File && awaiting_decision_.load() &&
+            if (awaiting_decision_.load() &&
                 decision_buf_.find('\n') != std::string::npos) {
                 resolve_decision(decision_buf_.starts_with("ACCEPT"));
             }
             return QUIC_STATUS_SUCCESS;
 
         case QUIC_STREAM_EVENT_PEER_SEND_SHUTDOWN:
-            if (stream_mode_ != StreamMode::File) {
-                notify_echo_waiter(true);
-            } else if (awaiting_decision_.load()) {
-                // FIN during the decision phase (e.g. REJECT closes the stream).
+            if (awaiting_decision_.load()) {
                 resolve_decision(decision_buf_.starts_with("ACCEPT"));
             } else {
                 notify_file_waiter(file_ack_.starts_with("OK"));
@@ -171,9 +156,7 @@ QUIC_STATUS QuicClient::on_stream_event(HQUIC stream, QUIC_STREAM_EVENT* event) 
 
         case QUIC_STREAM_EVENT_SEND_COMPLETE:
             std::free(event->SEND_COMPLETE.ClientContext);
-            if (stream_mode_ == StreamMode::File) {
-                notify_send_waiter();
-            }
+            notify_send_waiter();
             return QUIC_STATUS_SUCCESS;
 
         case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
@@ -392,52 +375,6 @@ bool QuicClient::is_connected() const {
     return connected_;
 }
 
-bool QuicClient::send_echo(std::string_view message,
-                           std::string& out_reply,
-                           int timeout_ms) {
-    if (!connected_ || connection_ == nullptr || api_ == nullptr) {
-        std::cerr << "QuicClient::send_echo: not connected\n";
-        return false;
-    }
-
-    echo_reply_.clear();
-    stream_mode_ = StreamMode::Echo;
-    {
-        std::lock_guard lock(echo_mutex_);
-        echo_done_ = false;
-        echo_ok_ = false;
-    }
-
-    if (!open_stream()) {
-        return false;
-    }
-
-    if (QUIC_FAILED(stream_send_copy(
-            api_, stream_, message.data(), message.size(), QUIC_SEND_FLAG_FIN))) {
-        std::cerr << "QuicClient::send_echo: StreamSend failed\n";
-        abort_stream();
-        return false;
-    }
-
-    // Block until the server echoes back (PEER_SEND_SHUTDOWN in callback).
-    {
-        std::unique_lock lock(echo_mutex_);
-        const bool finished = echo_cv_.wait_for(
-            lock,
-            std::chrono::milliseconds(timeout_ms),
-            [this] { return echo_done_; });
-
-        if (!finished || !echo_ok_) {
-            std::cerr << "QuicClient::send_echo: timed out or echo failed\n";
-            return false;
-        }
-    }
-
-    out_reply = echo_reply_;
-    std::cout << "QuicClient: received echo \"" << out_reply << "\"\n";
-    return true;
-}
-
 bool QuicClient::send_file(const std::string& file_path,
                            int timeout_ms,
                            ProgressFn on_progress) {
@@ -495,7 +432,6 @@ bool QuicClient::send_file_internal(const std::string& file_path,
     const std::string header_text = encode_file_header(header);
     const uint64_t file_size = bytes_to_send.value_or(header.size);
 
-    stream_mode_ = StreamMode::File;
     file_ack_.clear();
     rejected_ = false;
     decision_buf_.clear();
@@ -625,7 +561,6 @@ bool QuicClient::send_raw_stream(std::string_view data, bool fin, int timeout_ms
         return false;
     }
 
-    stream_mode_ = StreamMode::File;
     file_ack_.clear();
     rejected_ = false;
     {

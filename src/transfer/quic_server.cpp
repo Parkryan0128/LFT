@@ -42,7 +42,7 @@ bool QuicServer::open_configuration() {
     QUIC_SETTINGS settings{};
     settings.IdleTimeoutMs = 30'000;
     settings.IsSet.IdleTimeoutMs = TRUE;
-    // Allow the client to open one bidirectional stream (required for echo).
+    // Allow the client to open one bidirectional stream (required for file transfer).
     settings.PeerBidiStreamCount = 1;
     settings.IsSet.PeerBidiStreamCount = TRUE;
 
@@ -95,15 +95,6 @@ QUIC_STATUS QuicServer::stream_callback(HQUIC stream,
     return static_cast<QuicServer*>(context)->on_stream_event(stream, event);
 }
 
-void QuicServer::notify_echo_waiter(bool success) {
-    {
-        std::lock_guard lock(echo_mutex_);
-        echo_done_ = true;
-        echo_ok_ = success;
-    }
-    echo_cv_.notify_one();
-}
-
 void QuicServer::notify_file_waiter(bool success) {
     {
         std::lock_guard lock(file_mutex_);
@@ -140,8 +131,7 @@ QUIC_STATUS QuicServer::on_connection_event(HQUIC connection,
                     client_connection_ = nullptr;
                 }
             }
-            // Wake receive_file()/wait_for_echo() if they are draining the
-            // connection close (confirms our ack reached the client).
+            // Wake receive_file() if it is draining the connection close.
             conn_cv_.notify_all();
             return QUIC_STATUS_SUCCESS;
 
@@ -170,71 +160,32 @@ QUIC_STATUS QuicServer::on_connection_event(HQUIC connection,
 QUIC_STATUS QuicServer::on_stream_event(HQUIC stream, QUIC_STREAM_EVENT* event) {
     switch (event->Type) {
         case QUIC_STREAM_EVENT_RECEIVE:
-            for (uint32_t i = 0; i < event->RECEIVE.BufferCount; ++i) {
-                const QUIC_BUFFER& buf = event->RECEIVE.Buffers[i];
-                if (stream_mode_ == StreamMode::File) {
+            if (receiving_file_.load()) {
+                for (uint32_t i = 0; i < event->RECEIVE.BufferCount; ++i) {
+                    const QUIC_BUFFER& buf = event->RECEIVE.Buffers[i];
                     append_file_bytes(buf.Buffer, buf.Length);
-                } else {
-                    stream_receive_buffer_.append(
-                        reinterpret_cast<const char*>(buf.Buffer),
-                        buf.Length);
                 }
             }
             return QUIC_STATUS_SUCCESS;
 
         case QUIC_STREAM_EVENT_PEER_SEND_SHUTDOWN:
-            if (stream_mode_ == StreamMode::File) {
-                // Finalize once accepted, or report a header/IO error. While
-                // awaiting an accept/reject decision the client sends no FIN, so
-                // this won't fire prematurely.
+            if (receiving_file_.load()) {
                 if (file_accepted_.load() || file_io_error_) {
                     finish_file_receive(stream);
-                }
-            } else {
-                const bool matches = (stream_receive_buffer_ == expected_message_);
-                if (echo_out_reply_ != nullptr) {
-                    *echo_out_reply_ = stream_receive_buffer_;
-                }
-
-                if (!matches) {
-                    std::cerr << "QuicServer: unexpected message (expected \""
-                              << expected_message_ << "\", got \""
-                              << stream_receive_buffer_ << "\")\n";
-                    notify_echo_waiter(false);
-                    return QUIC_STATUS_SUCCESS;
-                }
-
-                // Echo the same bytes back, with FIN to close our send side.
-                if (QUIC_FAILED(stream_send_copy(
-                        api_,
-                        stream,
-                        stream_receive_buffer_.data(),
-                        stream_receive_buffer_.size(),
-                        QUIC_SEND_FLAG_FIN))) {
-                    std::cerr << "QuicServer: StreamSend echo failed\n";
-                    notify_echo_waiter(false);
                 }
             }
             return QUIC_STATUS_SUCCESS;
 
         case QUIC_STREAM_EVENT_SEND_COMPLETE:
             std::free(event->SEND_COMPLETE.ClientContext);
-            if (stream_mode_ == StreamMode::File) {
-                // Several sends happen on a file stream (ACCEPT, then OK/FAIL).
-                // Only the final ack should wake receive_file().
-                if (sending_final_ack_) {
-                    notify_file_waiter(file_result_.success);
-                }
-            } else {
-                notify_echo_waiter(true);
+            if (receiving_file_.load() && sending_final_ack_) {
+                notify_file_waiter(file_result_.success);
             }
             return QUIC_STATUS_SUCCESS;
 
-        // Peer abandoned the transfer (e.g. client hit an error mid-send).
-        // Fail fast instead of letting the waiter block until timeout.
         case QUIC_STREAM_EVENT_PEER_SEND_ABORTED:
         case QUIC_STREAM_EVENT_PEER_RECEIVE_ABORTED:
-            if (stream_mode_ == StreamMode::File) {
+            if (receiving_file_.load()) {
                 if (file_out_ != nullptr && file_out_->is_open()) {
                     file_out_->close();
                 }
@@ -242,8 +193,6 @@ QUIC_STATUS QuicServer::on_stream_event(HQUIC stream, QUIC_STREAM_EVENT* event) 
                     file_result_.error = "peer aborted the transfer";
                 }
                 notify_file_waiter(false);
-            } else {
-                notify_echo_waiter(false);
             }
             return QUIC_STATUS_SUCCESS;
 
@@ -547,6 +496,7 @@ bool QuicServer::start(std::string_view host) {
 }
 
 void QuicServer::stop() {
+    receiving_file_.store(false);
     // If a client is still connected, ask msquic to shut the connection down.
     // The SHUTDOWN_COMPLETE callback then closes the handle, which lets
     // RegistrationClose() below return instead of blocking forever.
@@ -590,42 +540,6 @@ bool QuicServer::is_running() const {
     return running_;
 }
 
-bool QuicServer::wait_for_echo(std::string_view expected_message,
-                               std::string& out_reply,
-                               int timeout_ms,
-                               std::function<void()> on_armed) {
-    {
-        std::lock_guard lock(echo_mutex_);
-        stream_mode_ = StreamMode::Echo;
-        expected_message_ = std::string(expected_message);
-        echo_out_reply_ = &out_reply;
-        echo_done_ = false;
-        echo_ok_ = false;
-        stream_receive_buffer_.clear();
-    }
-
-    // Safe for the client to send now — expected message is armed.
-    if (on_armed) {
-        on_armed();
-    }
-
-    std::unique_lock lock(echo_mutex_);
-    const bool finished = echo_cv_.wait_for(
-        lock,
-        std::chrono::milliseconds(timeout_ms),
-        [this] { return echo_done_; });
-
-    echo_out_reply_ = nullptr;
-
-    if (!finished || !echo_ok_) {
-        std::cerr << "QuicServer::wait_for_echo: timed out or echo failed\n";
-        return false;
-    }
-
-    std::cout << "QuicServer: echoed \"" << out_reply << "\"\n";
-    return true;
-}
-
 bool QuicServer::receive_file(const std::string& output_path,
                               int timeout_ms,
                               std::function<void()> on_armed,
@@ -654,7 +568,7 @@ bool QuicServer::receive_file(const std::string& output_path,
 
     {
         std::lock_guard lock(file_mutex_);
-        stream_mode_ = StreamMode::File;
+        receiving_file_.store(true);
         file_output_is_dir_ = looks_like_dir;
         file_output_dir_ = looks_like_dir ? output_path : std::string();
         file_output_path_ = looks_like_dir ? std::string() : output_path;
@@ -701,10 +615,12 @@ bool QuicServer::receive_file(const std::string& output_path,
             [this] { return offer_ready_ || file_done_; });
 
         if (!got) {
+            receiving_file_.store(false);
             std::cerr << "QuicServer::receive_file: timed out waiting for sender\n";
             return false;
         }
-        if (file_done_) {  // an error finished things before we could prompt
+        if (file_done_) {
+            receiving_file_.store(false);
             return false;
         }
 
@@ -719,6 +635,7 @@ bool QuicServer::receive_file(const std::string& output_path,
             file_result_.error = "rejected by receiver";
             std::cout << "QuicServer: rejected file \"" << header.name << "\"\n";
             drain_connection();
+            receiving_file_.store(false);
             return false;
         }
 
@@ -728,6 +645,7 @@ bool QuicServer::receive_file(const std::string& output_path,
                 stream_send_copy(api_, file_stream_, "REJECT\n", 7, QUIC_SEND_FLAG_FIN);
                 std::cerr << "QuicServer: cannot open output, rejecting\n";
                 drain_connection();
+                receiving_file_.store(false);
                 return false;
             }
             file_accepted_.store(true);
@@ -747,12 +665,14 @@ bool QuicServer::receive_file(const std::string& output_path,
         if (file_out_ != nullptr && file_out_->is_open()) {
             file_out_->close();
         }
+        receiving_file_.store(false);
         std::cerr << "QuicServer::receive_file: timed out or transfer failed\n";
         return false;
     }
     lock.unlock();
 
     drain_connection();
+    receiving_file_.store(false);
     return true;
 }
 

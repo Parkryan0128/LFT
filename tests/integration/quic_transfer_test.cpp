@@ -1,5 +1,4 @@
-// QUIC integration tests: connect, echo, file transfer, and edge cases.
-#include "integration/quic_test_access.h"
+// QUIC integration tests: connect, file transfer, and edge cases.
 #include "integration/quic_test_fixture.h"
 
 #include <gtest/gtest.h>
@@ -92,80 +91,6 @@ TEST(QuicConnect, DoubleDisconnectSafe) {
     EXPECT_FALSE(client.is_connected());
 
     server.stop();
-}
-
-TEST(QuicEcho, RoundTrip) {
-    const uint16_t port = lft::test::next_port();
-    lft::test::EchoSession session(port);
-    session.start("hello");
-    ASSERT_TRUE(session.wait_ready());
-
-    lft::QuicClient client;
-    std::string reply;
-    ASSERT_TRUE(client.connect(lft::test::kLoopbackHost, port));
-    ASSERT_TRUE(client.send_echo("hello", reply, 5000));
-    client.disconnect();
-
-    session.signal_client_done();
-    session.join();
-
-    EXPECT_EQ(reply, "hello");
-}
-
-TEST(QuicEcho, EmptyMessage) {
-    const uint16_t port = lft::test::next_port();
-    lft::test::EchoSession session(port);
-    session.start("");
-    ASSERT_TRUE(session.wait_ready());
-
-    lft::QuicClient client;
-    std::string reply;
-    ASSERT_TRUE(client.connect(lft::test::kLoopbackHost, port));
-    ASSERT_TRUE(client.send_echo("", reply, 5000));
-    client.disconnect();
-
-    session.signal_client_done();
-    session.join();
-
-    EXPECT_EQ(reply, "");
-}
-
-TEST(QuicEcho, LargeMessage) {
-    const std::string message(32 * 1024, 'E');
-    const uint16_t port = lft::test::next_port();
-    lft::test::EchoSession session(port);
-    session.timeout_ms = 10000;
-    session.start(message);
-    ASSERT_TRUE(session.wait_ready());
-
-    lft::QuicClient client;
-    std::string reply;
-    ASSERT_TRUE(client.connect(lft::test::kLoopbackHost, port));
-    ASSERT_TRUE(client.send_echo(message, reply, 10000));
-    client.disconnect();
-
-    session.signal_client_done();
-    session.join();
-
-    EXPECT_EQ(reply, message);
-}
-
-TEST(QuicEcho, MismatchFails) {
-    const uint16_t port = lft::test::next_port();
-    lft::test::EchoSession session(port);
-    session.start("expected");
-    ASSERT_TRUE(session.wait_ready());
-
-    lft::QuicClient client;
-    std::string reply;
-    ASSERT_TRUE(client.connect(lft::test::kLoopbackHost, port));
-    EXPECT_FALSE(client.send_echo("different", reply, 5000));
-    client.disconnect();
-
-    session.signal_client_done();
-    session.join();
-
-    EXPECT_FALSE(session.echo_ok);
 }
 
 TEST(QuicClientValidation, SendFileNotConnected) {

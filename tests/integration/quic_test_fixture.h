@@ -11,7 +11,9 @@
 #include <fstream>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 
 namespace lft::test {
@@ -73,65 +75,6 @@ struct ListenSession {
             if (!ok) {
                 return;
             }
-
-            std::unique_lock lock(sync.mutex);
-            sync.cv.wait(lock, [&] { return sync.client_done; });
-            lock.unlock();
-            server.stop();
-        });
-    }
-
-    bool wait_ready() {
-        std::unique_lock lock(sync.mutex);
-        sync.cv.wait(lock, [&] { return sync.server_ready; });
-        return !sync.server_failed;
-    }
-
-    void signal_client_done() {
-        {
-            std::lock_guard lock(sync.mutex);
-            sync.client_done = true;
-        }
-        sync.cv.notify_all();
-    }
-
-    void join() {
-        if (thread.joinable()) {
-            thread.join();
-        }
-    }
-};
-
-// Server running wait_for_echo on a background thread.
-struct EchoSession {
-    QuicServer server;
-    Sync sync;
-    std::thread thread;
-    bool echo_ok = false;
-    std::string server_reply;
-    int timeout_ms = 5000;
-
-    explicit EchoSession(uint16_t port) : server(port) {}
-
-    void start(std::string_view expected) {
-        thread = std::thread([this, expected]() {
-            if (!server.start(kLoopbackHost)) {
-                std::lock_guard lock(sync.mutex);
-                sync.server_ready = true;
-                sync.server_failed = true;
-                sync.cv.notify_all();
-                return;
-            }
-
-            echo_ok = server.wait_for_echo(
-                expected,
-                server_reply,
-                timeout_ms,
-                [this] {
-                    std::lock_guard lock(sync.mutex);
-                    sync.server_ready = true;
-                    sync.cv.notify_all();
-                });
 
             std::unique_lock lock(sync.mutex);
             sync.cv.wait(lock, [&] { return sync.client_done; });
@@ -281,5 +224,26 @@ private:
     std::filesystem::path path_;
     std::filesystem::perms saved_{};
 };
+
+#ifdef LFT_TESTING
+// Friend helpers for negative-path QUIC integration tests.
+struct QuicTestAccess {
+    static bool SendFileWithHeader(QuicClient& client,
+                                   const std::string& file_path,
+                                   FileTransferHeader header,
+                                   int timeout_ms,
+                                   std::optional<uint64_t> bytes_to_send = std::nullopt) {
+        return client.send_file_internal(
+            file_path, header, timeout_ms, nullptr, bytes_to_send);
+    }
+
+    static bool SendRawStream(QuicClient& client,
+                              std::string_view data,
+                              bool fin,
+                              int timeout_ms) {
+        return client.send_raw_stream(data, fin, timeout_ms);
+    }
+};
+#endif
 
 }  // namespace lft::test

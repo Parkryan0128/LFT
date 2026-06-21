@@ -27,12 +27,6 @@ gtest_discover_tests(mdns_discovery_test)
 if(BUILD_INTEGRATION_TESTS)
   find_package(Msquic REQUIRED)
 
-  # Smoke: libmsquic loads.
-  add_executable(msquic_smoke_test smoke/msquic_smoke_test.cpp)
-  target_link_libraries(msquic_smoke_test PRIVATE Msquic::msquic GTest::gtest_main)
-  lft_set_msquic_rpath(msquic_smoke_test)
-  gtest_discover_tests(msquic_smoke_test)
-
   # Unit: wire protocol + SHA-256 (no networking).
   add_executable(transfer_protocol_test unit/transfer_protocol_test.cpp)
   target_include_directories(transfer_protocol_test PRIVATE
@@ -42,13 +36,12 @@ if(BUILD_INTEGRATION_TESTS)
   lft_set_msquic_rpath(transfer_protocol_test)
   gtest_discover_tests(transfer_protocol_test)
 
-  # Integration: QUIC connect, echo, file transfer, and edge cases.
-  add_executable(quic_transfer_test
-    integration/quic_transfer_test.cpp
-    integration/quic_test_access.cpp)
+  # Integration: QUIC connect, file transfer, and edge cases.
+  add_executable(quic_transfer_test integration/quic_transfer_test.cpp)
   target_include_directories(quic_transfer_test PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${LFT_TEST_INCLUDE_DIR})
+  target_compile_definitions(quic_transfer_test PRIVATE LFT_TESTING)
   target_link_libraries(quic_transfer_test PRIVATE lft_transfer GTest::gtest_main)
   lft_set_msquic_rpath(quic_transfer_test)
   gtest_discover_tests(quic_transfer_test)

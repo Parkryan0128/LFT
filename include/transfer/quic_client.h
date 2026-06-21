@@ -14,11 +14,13 @@
 
 namespace lft {
 
+#ifdef LFT_TESTING
 namespace test {
 struct QuicTestAccess;
 }
+#endif
 
-// QUIC client: connects to a server and sends data on a bidirectional stream.
+// QUIC client: connects to a server and sends file data on a bidirectional stream.
 class QuicClient {
 public:
     QuicClient();
@@ -36,11 +38,6 @@ public:
 
     bool is_connected() const;
 
-    // Open a stream, send message, wait for reply.
-    bool send_echo(std::string_view message,
-                   std::string& out_reply,
-                   int timeout_ms);
-
     // Open a stream, send file header, wait for the receiver's ACCEPT/REJECT,
     // then (if accepted) send bytes and wait for the OK/FAIL ack.
     // on_progress (optional): called as bytes are sent.
@@ -52,10 +49,11 @@ public:
     // the transfer (as opposed to a connection/IO error).
     bool was_rejected() const { return rejected_; }
 
+#ifdef LFT_TESTING
     friend struct test::QuicTestAccess;
+#endif
 
 private:
-    enum class StreamMode { Echo, File };
     // Client TLS + ALPN configuration (no cert, skips validation).
     bool open_configuration();
 
@@ -75,9 +73,6 @@ private:
     static QUIC_STATUS stream_callback(HQUIC stream,
                                        void* context,
                                        QUIC_STREAM_EVENT* event);
-
-    // Wake send_echo() once the server's reply arrives.
-    void notify_echo_waiter(bool success);
 
     // Wake send_file() once a chunk send completes or ack arrives.
     void notify_send_waiter();
@@ -108,7 +103,7 @@ private:
                             ProgressFn on_progress,
                             std::optional<uint64_t> bytes_to_send = std::nullopt);
 
-    // Send raw bytes on a new stream (for malformed-header tests).
+    // Send raw bytes on a new stream (integration tests only; use via QuicTestAccess).
     bool send_raw_stream(std::string_view data, bool fin, int timeout_ms);
 
     std::string host_;
@@ -140,17 +135,8 @@ private:
     std::condition_variable shutdown_cv_;
     bool shutdown_complete_ = false;
 
-    // Bidirectional stream used for echo and file transfer.
+    // Bidirectional stream used for file transfer.
     HQUIC stream_ = nullptr;
-    // Read on the msquic worker thread (stream callback); set before each send.
-    std::atomic<StreamMode> stream_mode_{StreamMode::Echo};
-
-    // send_echo() blocks on this until the reply is received.
-    std::mutex echo_mutex_;
-    std::condition_variable echo_cv_;
-    bool echo_done_ = false;
-    bool echo_ok_ = false;
-    std::string echo_reply_;
 
     // send_file() waits for chunk sends and the final server ack.
     std::mutex send_mutex_;

@@ -16,7 +16,7 @@
 
 namespace lft {
 
-// QUIC server: listens for QUIC connections and handles stream I/O (echo, file).
+// QUIC server: listens for QUIC connections and receives file streams.
 class QuicServer {
 public:
     explicit QuicServer(uint16_t port);
@@ -32,14 +32,6 @@ public:
     void stop();
 
     bool is_running() const;
-
-    // Block until a client connects, sends one message, and we send a reply.
-    // Returns false on timeout or error.
-    // on_armed (optional): called after expected message is set, before blocking.
-    bool wait_for_echo(std::string_view expected_message,
-                       std::string& out_reply,
-                       int timeout_ms,
-                       std::function<void()> on_armed = nullptr);
 
     // Block until a client sends one file on a stream. Writes to output_path
     // and verifies SHA-256. Returns false on timeout or hash mismatch.
@@ -58,7 +50,6 @@ public:
     const FileReceiveResult& last_file_result() const { return file_result_; }
 
 private:
-    enum class StreamMode { None, Echo, File };
     // TLS + ALPN configuration (must succeed before ListenerOpen).
     bool open_configuration();
 
@@ -82,9 +73,6 @@ private:
     static QUIC_STATUS stream_callback(HQUIC stream,
                                        void* context,
                                        QUIC_STREAM_EVENT* event);
-
-    // Wake wait_for_echo() once the echo exchange finishes.
-    void notify_echo_waiter(bool success);
 
     // Wake receive_file() once the file is saved and verified.
     void notify_file_waiter(bool success);
@@ -123,19 +111,11 @@ private:
     std::condition_variable conn_cv_;  // notified when client_connection_ clears
     HQUIC client_connection_ = nullptr;
 
-    // wait_for_echo() blocks on this until the client message is echoed back.
-    std::mutex echo_mutex_;
-    std::condition_variable echo_cv_;
-    bool echo_done_ = false;
-    bool echo_ok_ = false;
-    std::string expected_message_;
-    std::string* echo_out_reply_ = nullptr;
-
     // Bytes accumulated from the client's stream before PEER_SEND_SHUTDOWN.
     std::string stream_receive_buffer_;
 
-    // Read on the msquic worker thread, written by wait_for_echo/receive_file.
-    std::atomic<StreamMode> stream_mode_{StreamMode::None};
+    // Set by receive_file(); stream I/O is handled only while true.
+    std::atomic<bool> receiving_file_{false};
 
     // receive_file() state.
     std::mutex file_mutex_;
