@@ -77,11 +77,6 @@ The project is organized into libraries, frontends, and tests.
   brew install qt libmsquic cmake
   ```
 
-**Linux**
-
-* CMake 3.20+, C++20 compiler, Qt 6, msquic, OpenSSL
-* mDNS: `avahi-compat-libdns_sd` (or equivalent DNS-SD library)
-
 ### 2. Generate Dev TLS Certificates
 
 QUIC uses TLS. Generate self-signed dev certificates once per clone:
@@ -153,8 +148,6 @@ Or:
 xattr -cr /path/to/lft_gui.app
 ```
 
-Or right-click the app → **Open** → **Open**.
-
 ### 6. Demo Flow (Two Laptops)
 
 1. Connect both machines to the **same Wi‑Fi**.
@@ -190,7 +183,7 @@ LFT uses a three-layer design. CLI and GUI are thin clients over the same engine
 
 * Receivers advertise an `_lft._udp` DNS-SD service with their QUIC listen port.
 * Senders browse the LAN and resolve device names to IPv4 addresses.
-* Implemented with the DNS-SD API (`dns_sd.h`) — native on macOS, Avahi compat on Linux.
+* Implemented with the DNS-SD API (`dns_sd.h`).
 
 ### 2. Transfer Engine (`lft_transfer`)
 
