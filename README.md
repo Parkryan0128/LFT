@@ -234,7 +234,7 @@ Test categories:
 CI runs on every push/PR to `main` via GitHub Actions (`.github/workflows/ci.yml`).
 
 ***
-
+<a id="limitations"></a>
 ## ⚠️ Limitations
 
 * **Same LAN only** — both devices must be on the same local network.
