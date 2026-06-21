@@ -15,7 +15,7 @@ A C++ desktop application for **direct file transfer between devices on the same
 * [How to Build and Run](#️-how-to-build-and-run)
 * [How It Works (Architecture)](#️-how-it-works-architecture)
 * [Testing](#-testing)
-* [Limitations](#-limitations)
+* [Limitations](#limitations)
 * [Contact](#-contact)
 
 ***
