@@ -1,7 +1,7 @@
 #include "gui/send_worker.h"
 
 #include "gui/format.h"
-#include "gui/gui_constants.h"
+#include "lft/constants.h"
 #include "net/mdns.h"
 #include "transfer/quic_client.h"
 
@@ -13,7 +13,7 @@ void BrowseWorker::run() {
     emit status("Searching for receivers on the LAN…");
 
     lft::MdnsBrowser browser;
-    const std::vector<lft::PeerInfo> peers = browser.browse(lft::gui::kDiscoveryTimeoutMs);
+    const std::vector<lft::PeerInfo> peers = browser.browse(lft::kDiscoveryTimeoutMs);
 
     QList<PeerRow> rows;
     for (const lft::PeerInfo& peer : peers) {
@@ -65,7 +65,7 @@ void SendWorker::runManual(QString file_path, QString host, quint16 port) {
     };
 
     emit status("Sending file…");
-    const bool ok = client.send_file(path, lft::gui::kSendTimeoutMs, progress);
+    const bool ok = client.send_file(path, lft::kSendTimeoutMs, progress);
     const bool rejected = client.was_rejected();
     client.disconnect();
 

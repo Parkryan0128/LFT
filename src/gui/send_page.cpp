@@ -1,6 +1,6 @@
 #include "gui/send_page.h"
 
-#include "gui/gui_constants.h"
+#include "lft/constants.h"
 #include "gui/send_worker.h"
 
 #include <QFileDialog>
@@ -165,7 +165,7 @@ void SendPage::sendFile() {
         });
     } else {
         connect(send_thread_, &QThread::started, worker, [worker, file, manual_host]() {
-            worker->runManual(file, manual_host, lft::gui::kDefaultPort);
+            worker->runManual(file, manual_host, lft::kDefaultPort);
         });
     }
 

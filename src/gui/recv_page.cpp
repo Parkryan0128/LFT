@@ -1,7 +1,7 @@
 #include "gui/recv_page.h"
 
 #include "gui/format.h"
-#include "gui/gui_constants.h"
+#include "lft/constants.h"
 #include "gui/recv_worker.h"
 
 #include <QDesktopServices>
@@ -107,7 +107,7 @@ void RecvPage::startReceive() {
 
     connect(worker_thread_, &QThread::started, worker, [worker, this]() {
         worker->run(out_dir_edit_->text().trimmed(), name_edit_->text(),
-                    lft::gui::kDefaultPort);
+                    lft::kDefaultPort);
     });
     connect(worker, &RecvWorker::status, this, &RecvPage::onStatus);
     connect(worker, &RecvWorker::progress, this, &RecvPage::onProgress);

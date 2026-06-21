@@ -9,7 +9,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 # Build options
 option(BUILD_TESTS "Build unit tests" ON)
-option(BUILD_MSQUIC_TESTS "Build msquic smoke/integration tests" ON)
+option(BUILD_INTEGRATION_TESTS "Build QUIC/mDNS integration tests" ON)
 option(BUILD_GUI "Build Qt GUI" ON)
 
 add_subdirectory(src)

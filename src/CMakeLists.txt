@@ -1,3 +1,9 @@
+# Shared constants and formatting used by CLI and GUI.
+add_library(lft_common
+  common/format.cpp
+)
+target_include_directories(lft_common PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
 # LAN networking: mDNS/DNS-SD discovery.
 add_library(lft_net
   net/mdns.cpp
@@ -16,7 +22,7 @@ add_subdirectory(transfer)
 add_executable(lft_cli main.cpp)
 
 target_include_directories(lft_cli PRIVATE ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(lft_cli PRIVATE lft_net lft_transfer)
+target_link_libraries(lft_cli PRIVATE lft_common lft_net lft_transfer)
 
 # Embed the msquic/OpenSSL rpath so the CLI runs without DYLD overrides.
 lft_set_msquic_rpath(lft_cli)

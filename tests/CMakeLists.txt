@@ -24,7 +24,7 @@ target_include_directories(mdns_discovery_test PRIVATE ${CMAKE_SOURCE_DIR}/inclu
 target_link_libraries(mdns_discovery_test PRIVATE lft_net GTest::gtest_main)
 gtest_discover_tests(mdns_discovery_test)
 
-if(BUILD_MSQUIC_TESTS)
+if(BUILD_INTEGRATION_TESTS)
   find_package(Msquic REQUIRED)
 
   # Smoke: libmsquic loads.

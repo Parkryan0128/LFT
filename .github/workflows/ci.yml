@@ -27,7 +27,7 @@ jobs:
             -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" \
             -DBUILD_GUI=ON \
             -DBUILD_TESTS=ON \
-            -DBUILD_MSQUIC_TESTS=ON
+            -DBUILD_INTEGRATION_TESTS=ON
 
       - name: Build
         run: cmake --build build --parallel

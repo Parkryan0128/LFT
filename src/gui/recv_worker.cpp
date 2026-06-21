@@ -1,7 +1,7 @@
 #include "gui/recv_worker.h"
 
 #include "gui/format.h"
-#include "gui/gui_constants.h"
+#include "lft/constants.h"
 #include "gui/recv_page.h"
 #include "net/mdns.h"
 #include "transfer/quic_server.h"
@@ -83,7 +83,7 @@ void RecvWorker::run(QString out_dir, QString device_name, quint16 port) {
     };
 
     const bool ok =
-        server->receive_file(out, lft::gui::kRecvTimeoutMs, nullptr, offer, progress);
+        server->receive_file(out, lft::kRecvTimeoutMs, nullptr, offer, progress);
     server->stop();
 
     const lft::FileReceiveResult& result = server->last_file_result();

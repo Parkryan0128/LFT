@@ -5,6 +5,8 @@
 //   lft send --to <device> --file <path>
 //   lft send --host <ip> --port <n> --file <path>
 //   lft list
+#include "lft/constants.h"
+#include "lft/format.h"
 #include "net/mdns.h"
 #include "transfer/quic_client.h"
 #include "transfer/quic_server.h"
@@ -12,10 +14,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <iomanip>
 #include <iostream>
 #include <optional>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -31,34 +31,6 @@
 
 namespace {
 
-constexpr uint16_t kDefaultPort = 53317;
-
-// How long `recv` waits for a sender to connect before giving up.
-constexpr int kRecvTimeoutMs = 10 * 60 * 1000;  // 10 minutes
-
-// How long `send` waits for the transfer (handshake + bytes + ack).
-constexpr int kSendTimeoutMs = 5 * 60 * 1000;  // 5 minutes
-
-// How long discovery (`list`, `send --to`) browses the LAN before giving up.
-constexpr int kDiscoveryTimeoutMs = 3000;
-
-// Format a byte count as a human-readable string (e.g. "1.5 MB").
-std::string format_bytes(uint64_t n) {
-    if (n < 1024) {
-        return std::to_string(n) + " B";
-    }
-    const char* units[] = {"KB", "MB", "GB", "TB"};
-    double value = static_cast<double>(n);
-    int unit = -1;
-    while (value >= 1024.0 && unit < 3) {
-        value /= 1024.0;
-        ++unit;
-    }
-    std::ostringstream os;
-    os << std::fixed << std::setprecision(1) << value << ' ' << units[unit];
-    return os.str();
-}
-
 // Build a progress callback that redraws a single line in place. No-op when
 // stdout is not a TTY (keeps piped logs clean; the final summary still prints).
 lft::ProgressFn make_progress(std::string label) {
@@ -73,7 +45,7 @@ lft::ProgressFn make_progress(std::string label) {
         }
         last_pct = pct;
         std::cout << '\r' << label << ' ' << pct << "%  ("
-                  << format_bytes(done) << " / " << format_bytes(total) << ")   "
+                  << lft::format_bytes(done) << " / " << lft::format_bytes(total) << ")   "
                   << std::flush;
     };
 }
@@ -126,7 +98,7 @@ void print_usage(std::ostream& os) {
        << "Options:\n"
        << "  --to <device>  Receiver device name as shown by `lft list` (send only).\n"
        << "  --host <ip>    Receiver IP address (send only).\n"
-       << "  --port <n>     QUIC listen port (default " << kDefaultPort << ").\n"
+       << "  --port <n>     QUIC listen port (default " << lft::kDefaultPort << ").\n"
        << "  --file <path>  File to send (send only).\n"
        << "  --out <dir>    Directory to save into (recv only).\n"
        << "  --name <name>  Advertised device name (recv only; default: hostname).\n"
@@ -222,7 +194,7 @@ int run_recv(const std::vector<std::string_view>& args) {
         return 2;
     }
 
-    const auto port = parse_port(flag_or(flags, "port", std::to_string(kDefaultPort)));
+    const auto port = parse_port(flag_or(flags, "port", std::to_string(lft::kDefaultPort)));
     if (!port) {
         std::cerr << "error: --port must be a number in 1..65535\n";
         return 2;
@@ -292,7 +264,7 @@ int run_recv(const std::vector<std::string_view>& args) {
         return answer == "y" || answer == "Y" || answer == "yes" || answer == "Yes";
     };
 
-    const bool ok = server.receive_file(out_dir, kRecvTimeoutMs, nullptr, on_offer,
+    const bool ok = server.receive_file(out_dir, lft::kRecvTimeoutMs, nullptr, on_offer,
                                         make_progress("  receiving"));
     if (isatty(fileno(stdout)) != 0) {
         std::cout << "\n";  // end the in-place progress line
@@ -361,7 +333,7 @@ int run_send(const std::vector<std::string_view>& args) {
         const std::string& name = to_it->second;
         std::cout << "[send] searching for \"" << name << "\" on the LAN..." << std::endl;
         lft::MdnsBrowser browser;
-        const auto peer = browser.find_by_name(name, kDiscoveryTimeoutMs);
+        const auto peer = browser.find_by_name(name, lft::kDiscoveryTimeoutMs);
         if (!peer) {
             std::cerr << "error: could not find device \"" << name
                       << "\" on the LAN (try `lft list`)\n";
@@ -370,7 +342,7 @@ int run_send(const std::vector<std::string_view>& args) {
         host = peer->host;
         target_port = peer->port;
     } else {
-        const auto port = parse_port(flag_or(flags, "port", std::to_string(kDefaultPort)));
+        const auto port = parse_port(flag_or(flags, "port", std::to_string(lft::kDefaultPort)));
         if (!port) {
             std::cerr << "error: --port must be a number in 1..65535\n";
             return 2;
@@ -386,7 +358,7 @@ int run_send(const std::vector<std::string_view>& args) {
         return 1;
     }
 
-    const bool ok = client.send_file(file, kSendTimeoutMs, make_progress("  sending"));
+    const bool ok = client.send_file(file, lft::kSendTimeoutMs, make_progress("  sending"));
     if (isatty(fileno(stdout)) != 0) {
         std::cout << "\n";  // end the in-place progress line
     }
@@ -418,7 +390,7 @@ int run_list(const std::vector<std::string_view>& args) {
 
     std::cout << "Searching for LFT receivers on the LAN..." << std::endl;
     lft::MdnsBrowser browser;
-    const std::vector<lft::PeerInfo> peers = browser.browse(kDiscoveryTimeoutMs);
+    const std::vector<lft::PeerInfo> peers = browser.browse(lft::kDiscoveryTimeoutMs);
 
     if (peers.empty()) {
         std::cout << "No receivers found. Make sure the other device is running "

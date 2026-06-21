@@ -20,6 +20,7 @@ target_include_directories(lft_gui PRIVATE
 
 target_link_libraries(lft_gui PRIVATE
   Qt6::Widgets
+  lft_common
   lft_net
   lft_transfer
 )
