@@ -243,8 +243,6 @@ CI runs on every push/PR to `main` via GitHub Actions (`.github/workflows/ci.yml
 * **Guest / corporate Wi‑Fi** may block peer-to-device traffic or mDNS — use manual IP.
 * **Unsigned macOS builds** require the quarantine workaround above for first launch.
 
-**Out of scope:** internet transfer, NAT traversal, folders, resume, mobile clients.
-
 ***
 
 ## 📧 Contact
