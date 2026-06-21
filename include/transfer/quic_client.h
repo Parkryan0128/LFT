@@ -56,7 +56,7 @@ public:
 
 private:
     enum class StreamMode { Echo, File };
-    // Step 2: client TLS + ALPN configuration (no cert, skips validation).
+    // Client TLS + ALPN configuration (no cert, skips validation).
     bool open_configuration();
 
     QUIC_STATUS on_connection_event(HQUIC connection, QUIC_CONNECTION_EVENT* event);
@@ -117,16 +117,16 @@ private:
     // app thread (connect/send/disconnect), so it must be atomic.
     std::atomic<bool> connected_{false};
 
-    // Step 1: API + registration.
+    // msquic API table and process registration.
     const QUIC_API_TABLE* api_ = nullptr;
     HQUIC registration_ = nullptr;
 
-    // Step 2: client config (ALPN "lft", no certificate).
+    // Client config (ALPN "lft", no certificate).
     HQUIC configuration_ = nullptr;
     std::string alpn_ = "lft";
     QUIC_CREDENTIAL_CONFIG cred_config_{};
 
-    // Step 4: the connection to the server.
+    // Active QUIC connection to the server.
     HQUIC connection_ = nullptr;
 
     // connect() blocks on this until CONNECTED or a shutdown event.
@@ -140,7 +140,7 @@ private:
     std::condition_variable shutdown_cv_;
     bool shutdown_complete_ = false;
 
-    // Step 5: bidirectional stream for echo.
+    // Bidirectional stream used for echo and file transfer.
     HQUIC stream_ = nullptr;
     // Read on the msquic worker thread (stream callback); set before each send.
     std::atomic<StreamMode> stream_mode_{StreamMode::Echo};

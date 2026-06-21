@@ -16,8 +16,7 @@
 
 namespace lft {
 
-// QUIC server: listens for one connection and handles stream I/O.
-// Step A: echo server that reads a message and sends a reply on the same stream.
+// QUIC server: listens for QUIC connections and handles stream I/O (echo, file).
 class QuicServer {
 public:
     explicit QuicServer(uint16_t port);
@@ -60,10 +59,10 @@ public:
 
 private:
     enum class StreamMode { None, Echo, File };
-    // Step 2: TLS + ALPN configuration (must succeed before ListenerOpen).
+    // TLS + ALPN configuration (must succeed before ListenerOpen).
     bool open_configuration();
 
-    // Step 3: Bind UDP port and accept incoming QUIC connections.
+    // Bind the QUIC listener on bind_host_:port_.
     bool open_listener();
 
     QUIC_STATUS on_listener_event(HQUIC listener, QUIC_LISTENER_EVENT* event);
@@ -100,11 +99,11 @@ private:
     std::string bind_host_;
     bool running_ = false;
 
-    // Step 1: API + registration.
+    // msquic API table and process registration.
     const QUIC_API_TABLE* api_ = nullptr;
     HQUIC registration_ = nullptr;
 
-    // Step 2: QUIC settings for this server (TLS cert + ALPN "lft").
+    // QUIC settings for this server (TLS cert + ALPN "lft").
     HQUIC configuration_ = nullptr;
     std::string alpn_ = "lft";
     std::string cert_path_;
@@ -112,8 +111,8 @@ private:
     QUIC_CERTIFICATE_FILE cert_files_{};
     QUIC_CREDENTIAL_CONFIG cred_config_{};
 
-    // Step 3: UDP/QUIC listener on bind_host_:port_. Fires listener_callback
-    // when a client attempts to connect.
+    // QUIC listener on bind_host_:port_. Fires listener_callback when a client
+    // attempts to connect.
     HQUIC listener_ = nullptr;
 
     // The accepted client connection. msquic gives us this handle in

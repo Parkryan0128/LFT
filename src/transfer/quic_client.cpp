@@ -234,9 +234,8 @@ bool QuicClient::stream_send_and_wait(HQUIC stream,
         [this] { return send_done_; });
 }
 
-// Step 2: client configuration — ALPN "lft" plus credentials that carry no
-// certificate and skip server-cert validation (dev only, matches the server's
-// self-signed cert).
+// Client configuration — ALPN "lft" plus credentials that carry no certificate
+// and skip server-cert validation (dev only, matches the server's self-signed cert).
 bool QuicClient::open_configuration() {
     QUIC_SETTINGS settings{};
     settings.IdleTimeoutMs = 30'000;
@@ -286,14 +285,12 @@ bool QuicClient::connect(std::string_view host, uint16_t port) {
     connect_ok_ = false;
     shutdown_complete_ = false;
 
-    // Step 1a: Load the msquic function table (MsQuicOpen2).
     if (QUIC_FAILED(MsQuicOpen2(&api_))) {
         std::cerr << "QuicClient::connect: MsQuicOpen2 failed\n";
         api_ = nullptr;
         return false;
     }
 
-    // Step 1b: Register this client as an msquic application ("LFT").
     const QUIC_REGISTRATION_CONFIG reg_config{
         .AppName = "LFT",
         .ExecutionProfile = QUIC_EXECUTION_PROFILE_LOW_LATENCY,
@@ -306,13 +303,11 @@ bool QuicClient::connect(std::string_view host, uint16_t port) {
         return false;
     }
 
-    // Step 2: ALPN + client credentials.
     if (!open_configuration()) {
         disconnect();  // releases registration_ + api_
         return false;
     }
 
-    // Step 3: Allocate the connection object and register our callback.
     if (QUIC_FAILED(api_->ConnectionOpen(
             registration_,
             connection_callback,
@@ -324,8 +319,7 @@ bool QuicClient::connect(std::string_view host, uint16_t port) {
         return false;
     }
 
-    // Step 4: Start the handshake toward host:port. This is async — results
-    // arrive on the connection callback.
+    // Start the handshake toward host:port (async — results arrive on the callback).
     if (QUIC_FAILED(api_->ConnectionStart(
             connection_,
             configuration_,
@@ -414,12 +408,10 @@ bool QuicClient::send_echo(std::string_view message,
         echo_ok_ = false;
     }
 
-    // Step 1+2: Open and start a bidirectional stream.
     if (!open_stream()) {
         return false;
     }
 
-    // Step 3: Send the message with FIN — tells the server we are done sending.
     if (QUIC_FAILED(stream_send_copy(
             api_, stream_, message.data(), message.size(), QUIC_SEND_FLAG_FIN))) {
         std::cerr << "QuicClient::send_echo: StreamSend failed\n";
@@ -427,7 +419,7 @@ bool QuicClient::send_echo(std::string_view message,
         return false;
     }
 
-    // Step 4: Block until the server echoes back (PEER_SEND_SHUTDOWN in callback).
+    // Block until the server echoes back (PEER_SEND_SHUTDOWN in callback).
     {
         std::unique_lock lock(echo_mutex_);
         const bool finished = echo_cv_.wait_for(
@@ -522,8 +514,8 @@ bool QuicClient::send_file_internal(const std::string& file_path,
         return false;
     }
 
-    // Step 1: send the text header (no FIN). Arm the decision phase first so the
-    // receiver's ACCEPT/REJECT reply is routed correctly.
+    // Send the text header (no FIN). Arm the decision phase so the receiver's
+    // ACCEPT/REJECT reply is routed correctly.
     awaiting_decision_.store(true);
     if (!stream_send_and_wait(
             stream_,
@@ -536,7 +528,7 @@ bool QuicClient::send_file_internal(const std::string& file_path,
         return false;
     }
 
-    // Step 1b: wait for the receiver to accept or reject before sending bytes.
+    // Wait for the receiver to accept or reject before sending body bytes.
     {
         std::unique_lock lock(decision_mutex_);
         const bool got = decision_cv_.wait_for(
@@ -559,7 +551,7 @@ bool QuicClient::send_file_internal(const std::string& file_path,
         }
     }
 
-    // Step 2: send file bytes in chunks; FIN on the last chunk.
+    // Send file bytes in chunks; FIN on the last chunk.
     if (file_size == 0) {
         if (!stream_send_and_wait(stream_, "", 0, true, timeout_ms)) {
             std::cerr << "QuicClient::send_file: failed to finish empty file\n";
@@ -608,7 +600,7 @@ bool QuicClient::send_file_internal(const std::string& file_path,
         }
     }
 
-    // Step 3: wait for server OK/FAIL ack.
+    // Wait for server OK/FAIL ack.
     {
         std::unique_lock lock(file_mutex_);
         const bool finished = file_cv_.wait_for(

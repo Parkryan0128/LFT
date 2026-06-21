@@ -10,20 +10,6 @@ namespace lft {
 // Progress callback: (bytes_done, bytes_total). May be called many times.
 using ProgressFn = std::function<void(uint64_t done, uint64_t total)>;
 
-// Address and port for QUIC connections.
-struct QuicEndpoint {
-    std::string host;
-    uint16_t port = 0;
-};
-
-// Result of a one-shot echo round-trip (client sends, server replies).
-struct QuicEchoResult {
-    bool success = false;
-    std::string message_sent;
-    std::string message_received;
-    std::string error;
-};
-
 // Largest header block we will buffer before giving up (guards against a peer
 // that never sends the terminating blank line).
 inline constexpr size_t kMaxHeaderBytes = 64 * 1024;

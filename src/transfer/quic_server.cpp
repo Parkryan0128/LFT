@@ -82,7 +82,7 @@ bool QuicServer::open_configuration() {
     return true;
 }
 
-// simply calls on_connection_event with the connection and event. msquic speaks C, so we need to wrap the method in a static function.
+// Static wrapper: msquic requires a C callback; forwards to on_connection_event.
 QUIC_STATUS QuicServer::connection_callback(HQUIC connection,
                                             void* context,
                                             QUIC_CONNECTION_EVENT* event) {
@@ -434,7 +434,7 @@ void QuicServer::finish_file_receive(HQUIC stream) {
     // notify_file_waiter runs from SEND_COMPLETE after the ack is sent.
 }
 
-// Simply calls on_listener_event with the listener and event. msquic speaks C, so we need to wrap the method in a static function.
+// Static wrapper: msquic requires a C callback; forwards to on_listener_event.
 QUIC_STATUS QuicServer::listener_callback(HQUIC listener,
                                           void* context,
                                           QUIC_LISTENER_EVENT* event) {
@@ -494,7 +494,7 @@ bool QuicServer::open_listener() {
     }
     QuicAddrSetPort(&address, port_);
 
-    // Actually bind the UDP socket and start accepting QUIC handshakes.
+    // Start the QUIC listener and accept handshakes on bind_host_:port_.
     if (QUIC_FAILED(api_->ListenerStart(listener_, &alpn_buffer, 1, &address))) {
         std::cerr << "QuicServer::open_listener: ListenerStart failed on "
                   << bind_host_ << ':' << port_ << '\n';
@@ -514,14 +514,12 @@ bool QuicServer::start(std::string_view host) {
 
     bind_host_ = std::string(host);
 
-    // Step 1a: Load the msquic function table (MsQuicOpen2).
     if (QUIC_FAILED(MsQuicOpen2(&api_))) {
         std::cerr << "QuicServer::start: MsQuicOpen2 failed\n";
         api_ = nullptr;
         return false;
     }
 
-    // Step 1b: Register this process as an msquic application ("LFT").
     const QUIC_REGISTRATION_CONFIG reg_config{
         .AppName = "LFT",
         .ExecutionProfile = QUIC_EXECUTION_PROFILE_LOW_LATENCY,
@@ -534,13 +532,11 @@ bool QuicServer::start(std::string_view host) {
         return false;
     }
 
-    // Step 2: TLS credentials + ALPN (required before ListenerOpen).
     if (!open_configuration()) {
         stop();  // releases registration_ + api_
         return false;
     }
 
-    // Step 3: Bind to bind_host_:port_ and accept connections.
     if (!open_listener()) {
         stop();  // releases configuration_ + registration_ + api_
         return false;

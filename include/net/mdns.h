@@ -3,8 +3,7 @@
 // LAN peer discovery via mDNS / DNS-SD (Bonjour).
 //
 // Receivers advertise an "_lft._udp" service carrying their QUIC port; senders
-// browse for it and resolve a peer name to an IPv4 address + port. This is the
-// Milestone 3 layer that lets `lft send --to <name>` work without a typed IP.
+// browse for it and resolve a peer name to an IPv4 address + port.
 //
 // Implemented on the DNS-SD C API (dns_sd.h), which is native on macOS and
 // available on Linux through avahi-compat-libdns_sd.

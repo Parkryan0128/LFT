@@ -9,7 +9,7 @@ if(NOT APPLE)
   target_link_libraries(lft_net PUBLIC dns_sd)
 endif()
 
-# QUIC file transfer engine (Milestone 1+).
+# QUIC file transfer engine.
 add_subdirectory(transfer)
 
 # Build the CLI executable

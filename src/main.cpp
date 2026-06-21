@@ -126,7 +126,7 @@ void print_usage(std::ostream& os) {
        << "Options:\n"
        << "  --to <device>  Receiver device name as shown by `lft list` (send only).\n"
        << "  --host <ip>    Receiver IP address (send only).\n"
-       << "  --port <n>     UDP port (default " << kDefaultPort << ").\n"
+       << "  --port <n>     QUIC listen port (default " << kDefaultPort << ").\n"
        << "  --file <path>  File to send (send only).\n"
        << "  --out <dir>    Directory to save into (recv only).\n"
        << "  --name <name>  Advertised device name (recv only; default: hostname).\n"

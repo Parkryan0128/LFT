@@ -1,4 +1,4 @@
-// Integration tests for mDNS/DNS-SD discovery (Milestone 3).
+// Integration tests for mDNS/DNS-SD discovery.
 #include "net/mdns.h"
 
 #include <gtest/gtest.h>
