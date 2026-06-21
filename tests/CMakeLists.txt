@@ -7,12 +7,6 @@ include(GoogleTest)
 
 set(LFT_TEST_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
-# Legacy UDP loopback (pre-mDNS; slow — run explicitly with `ctest -R Checkpoint1`).
-add_executable(checkpoint1_test legacy/checkpoint1_test.cpp)
-target_include_directories(checkpoint1_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(checkpoint1_test PRIVATE lft_net)
-add_test(NAME Legacy.Checkpoint1_UDP_Loopback COMMAND checkpoint1_test)
-
 # CLI subprocess tests (argument parsing + early validation).
 add_executable(cli_e2e_test e2e/cli_test.cpp)
 target_include_directories(cli_e2e_test PRIVATE

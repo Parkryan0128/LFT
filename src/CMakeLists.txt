@@ -1,6 +1,5 @@
-# LAN networking: legacy UDP socket helper + mDNS/DNS-SD discovery.
+# LAN networking: mDNS/DNS-SD discovery.
 add_library(lft_net
-  net/udp_socket.cpp
   net/mdns.cpp
 )
 target_include_directories(lft_net PUBLIC ${CMAKE_SOURCE_DIR}/include)

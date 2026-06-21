@@ -33,5 +33,4 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Test
-        # Skip the 5M-packet legacy UDP stress test (slow/flaky on shared runners).
-        run: ctest --test-dir build --output-on-failure -j1 -E "Legacy.Checkpoint1"
+        run: ctest --test-dir build --output-on-failure -j1

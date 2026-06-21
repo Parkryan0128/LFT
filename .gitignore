@@ -1,5 +1,6 @@
 # Build output
 /build/
+/CMakeFiles/
 
 # Qt (MOC/UIC/RCC autogen + Qt Creator; out-of-tree build keeps most of this in /build/)
 *_autogen/
