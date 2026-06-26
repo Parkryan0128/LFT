@@ -2,7 +2,6 @@
 
 [![Language](https://img.shields.io/badge/Language-C%2B%2B20-blue.svg)]()
 [![Build](https://img.shields.io/badge/Build-CMake-green.svg)]()
-[![Transport](https://img.shields.io/badge/Transport-QUIC-orange.svg)]()
 
 A C++ desktop application for **direct file transfer between devices on the same Wi‑Fi or local network**. There is no cloud upload, no account, and no internet dependency — files move straight from sender disk to receiver disk over **QUIC** with **TLS encryption** and **SHA-256 integrity verification**.
 
@@ -22,13 +21,12 @@ A C++ desktop application for **direct file transfer between devices on the same
 
 ## ✨ Key Features
 
-* **Direct LAN Transfer:** Send one file at a time between two peers on the same network — no cloud, no relay server.
+* **Direct LAN Transfer:** Send one file at a time between two machines on the same network — no cloud, no relay server.
 * **QUIC Transport:** Reliable, encrypted file streaming via [msquic](https://github.com/microsoft/msquic) with TLS and chunked I/O for large files.
-* **Automatic Discovery:** mDNS / DNS-SD (Bonjour) advertises receivers on the LAN so senders can find devices by name.
-* **Manual Fallback:** Connect by IP and port when mDNS is blocked (guest or corporate Wi‑Fi).
+* **Automatic Discovery:** mDNS / DNS-SD advertises receivers on the LAN so senders can find devices by name.
+* **Manual Fallback:** Connect by IP and port when mDNS is blocked.
 * **Accept / Reject UX:** Receiver must approve each incoming transfer before any file bytes are written.
 * **Integrity Verification:** SHA-256 hash computed on the sender and verified on the receiver after every transfer.
-* **Dual Interface:** Full **CLI** (`send` / `recv` / `list`) and a minimal **Qt 6 GUI** share the same transfer engine.
 * **Layered Architecture:** Transfer engine is decoupled from CLI and GUI for clean separation and testability.
 * **Automated Tests:** Google Test unit/integration suite and GitHub Actions CI on macOS.
 
@@ -40,25 +38,25 @@ The project is organized into libraries, frontends, and tests.
 
 ```
 .
-├── include/                    # Public headers
+├── include/                    
 │   ├── lft/                    # Shared constants and formatting
 │   ├── net/                    # mDNS / DNS-SD discovery
 │   └── transfer/               # QUIC client, server, wire protocol, SHA-256
 ├── src/
-│   ├── common/                 # Shared utilities (format_bytes)
+│   ├── common/                
 │   ├── net/                    # mDNS implementation
-│   ├── transfer/               # QUIC transfer engine (msquic)
-│   ├── gui/                    # Qt 6 desktop UI
-│   └── main.cpp                # CLI entry point
+│   ├── transfer/               # QUIC transfer engine
+│   ├── gui/                    # Qt 6
+│   └── main.cpp                
 ├── tests/
-│   ├── unit/                   # Wire protocol + SHA-256 tests
-│   ├── integration/            # QUIC + mDNS integration tests
-│   └── e2e/                    # CLI subprocess tests
-├── cmake/                      # FindMsquic.cmake
+│   ├── unit/                   
+│   ├── integration/           
+│   └── e2e/                   
+├── cmake/                     
 ├── scripts/
 │   └── generate_dev_certs.sh   # Dev TLS certificates for QUIC
 ├── .github/workflows/
-│   └── ci.yml                  # Build + test on macOS
+│   └── ci.yml                  
 └── CMakeLists.txt
 ```
 
@@ -70,7 +68,7 @@ The project is organized into libraries, frontends, and tests.
 
 **macOS (primary development target)**
 
-* **C++20 compiler** (Apple Clang via Xcode Command Line Tools)
+* **C++20 compiler**
 * **CMake** 3.20+
 * **Homebrew packages:**
   ```bash
@@ -85,7 +83,7 @@ QUIC uses TLS. Generate self-signed dev certificates once per clone:
 ./scripts/generate_dev_certs.sh
 ```
 
-This writes `certs/lft-cert.pem` and `certs/lft-key.pem` (gitignored).
+This writes `certs/lft-cert.pem` and `certs/lft-key.pem`.
 
 ### 3. Configure and Build
 
@@ -136,18 +134,6 @@ Binaries:
 open build/src/gui/lft_gui.app
 ```
 
-Or:
-
-```bash
-./build/src/gui/lft_gui.app/Contents/MacOS/lft_gui
-```
-
-**macOS note:** If macOS blocks the unsigned app on first launch, run:
-
-```bash
-xattr -cr /path/to/lft_gui.app
-```
-
 ### 6. Demo Flow (Two Laptops)
 
 1. Connect both machines to the **same Wi‑Fi**.
@@ -183,7 +169,6 @@ LFT uses a three-layer design. CLI and GUI are thin clients over the same engine
 
 * Receivers advertise an `_lft._udp` DNS-SD service with their QUIC listen port.
 * Senders browse the LAN and resolve device names to IPv4 addresses.
-* Implemented with the DNS-SD API (`dns_sd.h`).
 
 ### 2. Transfer Engine (`lft_transfer`)
 
@@ -240,8 +225,7 @@ CI runs on every push/PR to `main` via GitHub Actions (`.github/workflows/ci.yml
 * **Same LAN only** — both devices must be on the same local network.
 * **One file per transfer** — zip folders manually if needed.
 * **Both devices must run LFT** — receiver must be in receive mode.
-* **Guest / corporate Wi‑Fi** may block peer-to-device traffic or mDNS — use manual IP.
-* **Unsigned macOS builds** require the quarantine workaround above for first launch.
+* **Guest / corporate Wi‑Fi** may block traffic or mDNS — use manual IP.
 
 ***
 
