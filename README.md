@@ -5,31 +5,6 @@ A C++ desktop application for **direct file transfer between devices on the same
 
 ***
 
-## Table of Contents
-
-* [Key Features](#-key-features)
-* [Project Structure](#-project-structure)
-* [How to Build and Run](#️-how-to-build-and-run)
-* [How It Works (Architecture)](#️-how-it-works-architecture)
-* [Testing](#-testing)
-* [Limitations](#limitations)
-* [Contact](#-contact)
-
-***
-
-## Key Features
-
-* **Direct LAN Transfer:** Send one file at a time between two machines on the same network — no cloud, no relay server.
-* **QUIC Transport:** Reliable, encrypted file streaming via [msquic](https://github.com/microsoft/msquic) with TLS and chunked I/O for large files.
-* **Automatic Discovery:** mDNS / DNS-SD advertises receivers on the LAN so senders can find devices by name.
-* **Manual Fallback:** Connect by IP and port when mDNS is blocked.
-* **Accept / Reject UX:** Receiver must approve each incoming transfer before any file bytes are written.
-* **Integrity Verification:** SHA-256 hash computed on the sender and verified on the receiver after every transfer.
-* **Layered Architecture:** Transfer engine is decoupled from CLI and GUI for clean separation and testability.
-* **Automated Tests:** Google Test unit/integration suite and GitHub Actions CI on macOS.
-
-***
-
 ## Project Structure
 
 The project is organized into libraries, frontends, and tests.
@@ -205,25 +180,6 @@ Run the full test suite:
 ```bash
 ctest --test-dir build --output-on-failure -j1
 ```
-
-Test categories:
-
-| Category | Examples |
-|----------|----------|
-| **Unit** | Wire protocol encode/decode, filename sanitization, SHA-256 |
-| **Integration** | QUIC connect, file transfer, hash mismatch, mDNS browse |
-| **E2E** | CLI argument parsing and validation |
-
-CI runs on every push/PR to `main` via GitHub Actions (`.github/workflows/ci.yml`).
-
-***
-<a id="limitations"></a>
-## Limitations
-
-* **Same LAN only** — both devices must be on the same local network.
-* **One file per transfer** — zip folders manually if needed.
-* **Both devices must run LFT** — receiver must be in receive mode.
-* **Guest / corporate Wi‑Fi** may block traffic or mDNS — use manual IP.
 
 ***
 
