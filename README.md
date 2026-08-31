@@ -5,7 +5,7 @@ A C++ desktop application for **direct file transfer between devices on the same
 
 ***
 
-## 📋 Table of Contents
+## Table of Contents
 
 * [Key Features](#-key-features)
 * [Project Structure](#-project-structure)
