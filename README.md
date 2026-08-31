@@ -1,7 +1,5 @@
-# LFT — LAN File Transfer
+# LAN File Transfer Application
 
-[![Language](https://img.shields.io/badge/Language-C%2B%2B20-blue.svg)]()
-[![Build](https://img.shields.io/badge/Build-CMake-green.svg)]()
 
 A C++ desktop application for **direct file transfer between devices on the same Wi‑Fi or local network**. There is no cloud upload, no account, and no internet dependency — files move straight from sender disk to receiver disk over **QUIC** with **TLS encryption** and **SHA-256 integrity verification**.
 
@@ -19,7 +17,7 @@ A C++ desktop application for **direct file transfer between devices on the same
 
 ***
 
-## ✨ Key Features
+## Key Features
 
 * **Direct LAN Transfer:** Send one file at a time between two machines on the same network — no cloud, no relay server.
 * **QUIC Transport:** Reliable, encrypted file streaming via [msquic](https://github.com/microsoft/msquic) with TLS and chunked I/O for large files.
@@ -32,7 +30,7 @@ A C++ desktop application for **direct file transfer between devices on the same
 
 ***
 
-## 📁 Project Structure
+## Project Structure
 
 The project is organized into libraries, frontends, and tests.
 
@@ -62,7 +60,7 @@ The project is organized into libraries, frontends, and tests.
 
 ***
 
-## ⚙️ How to Build and Run
+## How to Build and Run
 
 ### 1. Requirements
 
@@ -144,7 +142,7 @@ open build/src/gui/lft_gui.app
 
 ***
 
-## 🏗️ How It Works (Architecture)
+## How It Works (Architecture)
 
 LFT uses a three-layer design. CLI and GUI are thin clients over the same engine.
 
@@ -200,7 +198,7 @@ LFT uses a three-layer design. CLI and GUI are thin clients over the same engine
 
 ***
 
-## 🧪 Testing
+## Testing
 
 Run the full test suite:
 
@@ -220,7 +218,7 @@ CI runs on every push/PR to `main` via GitHub Actions (`.github/workflows/ci.yml
 
 ***
 <a id="limitations"></a>
-## ⚠️ Limitations
+## Limitations
 
 * **Same LAN only** — both devices must be on the same local network.
 * **One file per transfer** — zip folders manually if needed.
@@ -229,7 +227,7 @@ CI runs on every push/PR to `main` via GitHub Actions (`.github/workflows/ci.yml
 
 ***
 
-## 📧 Contact
+## Contact
 
 - **Name:** Ryan Park
 - **Email:** [parkryan0128@gmail.com](mailto:parkryan0128@gmail.com)
