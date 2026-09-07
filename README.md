@@ -1,66 +1,53 @@
-# LAN File Transfer Application
+# Local File Transfer (LFT)
 
+LFT sends files directly between devices on the same local network. It is written in C++ and includes both a Qt desktop app and a command-line interface.
 
-A C++ desktop application for **direct file transfer between devices on the same Wi‑Fi or local network**. There is no cloud upload, no account, and no internet dependency — files move straight from sender disk to receiver disk over **QUIC** with **TLS encryption** and **SHA-256 integrity verification**.
+Devices are discovered with mDNS, files are transferred over QUIC, and completed transfers are verified with SHA-256. No account or cloud storage is required.
 
-***
+## How it works
 
-## Project Structure
-
-The project is organized into libraries, frontends, and tests.
-
-```
-.
-├── include/                    
-│   ├── lft/                    # Shared constants and formatting
-│   ├── net/                    # mDNS / DNS-SD discovery
-│   └── transfer/               # QUIC client, server, wire protocol, SHA-256
-├── src/
-│   ├── common/                
-│   ├── net/                    # mDNS implementation
-│   ├── transfer/               # QUIC transfer engine
-│   ├── gui/                    # Qt 6
-│   └── main.cpp                
-├── tests/
-│   ├── unit/                   
-│   ├── integration/           
-│   └── e2e/                   
-├── cmake/                     
-├── scripts/
-│   └── generate_dev_certs.sh   # Dev TLS certificates for QUIC
-├── .github/workflows/
-│   └── ci.yml                  
-└── CMakeLists.txt
+```text
+Sender                         Receiver
+  │                               │
+  ├── discovers receiver ────────►│  mDNS / Bonjour
+  ├── sends file details ────────►│
+  │◄────── accept or reject ──────┤
+  ├── streams file over QUIC ────►│
+  │◄──── verification result ─────┤
 ```
 
-***
+The receiver advertises an `_lft._udp` service on the network. The sender can connect using the discovered device name or an IP address.
 
-## How to Build and Run
+Both interfaces use the same transfer library.
 
-### 1. Requirements
+## Project structure
 
-**macOS (primary development target)**
+```text
+include/       Public headers
+src/common/    Shared utilities
+src/net/       mDNS discovery
+src/transfer/  QUIC transfer and SHA-256 verification
+src/gui/       Qt desktop app
+tests/         Unit, integration, and CLI tests
+```
 
-* **C++20 compiler**
-* **CMake** 3.20+
-* **Homebrew packages:**
-  ```bash
-  brew install qt libmsquic cmake
-  ```
+## Build
 
-### 2. Generate Dev TLS Certificates
+The project is developed and tested on macOS.
 
-QUIC uses TLS. Generate self-signed dev certificates once per clone:
+Install the required packages:
+
+```bash
+brew install cmake qt libmsquic
+```
+
+Generate a development certificate:
 
 ```bash
 ./scripts/generate_dev_certs.sh
 ```
 
-This writes `certs/lft-cert.pem` and `certs/lft-key.pem`.
-
-### 3. Configure and Build
-
-From the project root:
+Configure and build the project:
 
 ```bash
 cmake -S . -B build \
@@ -73,119 +60,63 @@ cmake -S . -B build \
 cmake --build build --parallel
 ```
 
-Binaries:
+The build creates:
 
-| Target | Path |
-|--------|------|
-| CLI | `build/src/lft_cli` |
-| GUI | `build/src/gui/lft_gui.app` |
-
-### 4. Run the CLI
-
-**Receiver** (Machine A — listen and save to a folder):
-
-```bash
-./build/src/lft_cli recv --port 53317 --out ./downloads/
+```text
+build/src/lft_cli
+build/src/gui/lft_gui.app
 ```
 
-**Sender** (Machine B — discover by device name):
+The generated certificate is self-signed, and the client does not validate it. This setup is intended for local development only.
 
-```bash
-./build/src/lft_cli list
-./build/src/lft_cli send --to "Machine-A-Name" --file ./video.mp4
-```
+## Run
 
-**Manual IP fallback** (when mDNS is blocked):
-
-```bash
-./build/src/lft_cli send --host 192.168.1.42 --port 53317 --file ./video.mp4
-```
-
-### 5. Run the GUI
+Open the desktop app:
 
 ```bash
 open build/src/gui/lft_gui.app
 ```
 
-### 6. Demo Flow (Two Laptops)
+To use the CLI, start a receiver on one device:
 
-1. Connect both machines to the **same Wi‑Fi**.
-2. On **Machine A:** open LFT → **Receive** → choose save folder → **Start receiving**.
-3. On **Machine B:** open LFT → **Send** → pick file → select Machine A from the device list → **Send**.
-4. On **Machine A:** click **Accept** when prompted.
-5. Confirm success — file appears in the save folder with SHA-256 verified.
-
-***
-
-## How It Works (Architecture)
-
-LFT uses a three-layer design. CLI and GUI are thin clients over the same engine.
-
-```
-┌─────────────┐   ┌─────────────┐
-│   Qt GUI    │   │     CLI     │
-└──────┬──────┘   └──────┬──────┘
-       │                 │
-       └────────┬────────┘
-                ▼
-       ┌─────────────────┐
-       │ Transfer Engine │  ← QUIC streams, chunked I/O, SHA-256
-       └────────┬────────┘
-                │
-       ┌────────┴────────┐
-       ▼                 ▼
-  QUIC (file data)   mDNS (discovery)
-  encrypted          UDP / Bonjour
+```bash
+./build/src/lft_cli recv --out ./downloads
 ```
 
-### 1. Discovery Layer (`lft_net`)
+Find available receivers from another device:
 
-* Receivers advertise an `_lft._udp` DNS-SD service with their QUIC listen port.
-* Senders browse the LAN and resolve device names to IPv4 addresses.
+```bash
+./build/src/lft_cli list
+```
 
-### 2. Transfer Engine (`lft_transfer`)
+Send a file to a discovered receiver:
 
-* **QUIC client / server** built on msquic with ALPN `"lft"` and dev TLS certificates.
-* **Wire protocol:** text header (`LFT/1`, filename, size, SHA-256 hash) followed by raw file bytes.
-* **Accept / reject:** receiver sends `ACCEPT\n` or `REJECT\n` before body bytes flow.
-* **Chunked streaming:** 64 KB chunks with progress callbacks; empty files supported.
-* **Verification:** receiver hashes the saved file and compares to the declared SHA-256.
+```bash
+./build/src/lft_cli send \
+  --to "Receiver Name" \
+  --file ./video.mp4
+```
 
-### 3. Frontends
+If discovery is unavailable, connect by IP:
 
-* **CLI** (`src/main.cpp`): `recv`, `send`, `list` commands with terminal progress output.
-* **GUI** (`src/gui/`): Qt 6 pages for home, send, and receive with worker threads for non-blocking I/O.
+```bash
+./build/src/lft_cli send \
+  --host 192.168.1.42 \
+  --port 53317 \
+  --file ./video.mp4
+```
 
-### Sender Flow
+The receiver must approve the transfer before file data is sent.
 
-1. Discover peers via mDNS (or enter IP manually).
-2. Compute SHA-256 of the file.
-3. Open QUIC connection, send metadata header.
-4. Wait for receiver accept/reject.
-5. Stream file bytes, wait for `OK` ack.
-
-### Receiver Flow
-
-1. Advertise via mDNS and listen for QUIC connections.
-2. Parse incoming header → prompt **Accept / Reject**.
-3. Stream bytes to disk.
-4. Verify SHA-256 and report result.
-
-***
-
-## Testing
-
-Run the full test suite:
+## Tests
 
 ```bash
 ctest --test-dir build --output-on-failure -j1
 ```
 
-***
-
 ## Contact
 
 - **Name:** Ryan Park
 - **Email:** [parkryan0128@gmail.com](mailto:parkryan0128@gmail.com)
-- **LinkedIn:** [https://www.linkedin.com/in/parkryan0128](https://www.linkedin.com/in/parkryan0128)
-- **GitHub:** [https://github.com/Parkryan0128](https://github.com/Parkryan0128)
+- **LinkedIn:** [linkedin.com/in/parkryan0128](https://www.linkedin.com/in/parkryan0128)
+- **GitHub:** [github.com/Parkryan0128](https://github.com/Parkryan0128)
