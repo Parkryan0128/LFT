@@ -116,7 +116,4 @@ ctest --test-dir build --output-on-failure -j1
 
 ## Contact
 
-- **Name:** Ryan Park
-- **Email:** [parkryan0128@gmail.com](mailto:parkryan0128@gmail.com)
-- **LinkedIn:** [linkedin.com/in/parkryan0128](https://www.linkedin.com/in/parkryan0128)
-- **GitHub:** [github.com/Parkryan0128](https://github.com/Parkryan0128)
+Ryan Park · [Email](mailto:parkryan0128@gmail.com) · [LinkedIn](https://www.linkedin.com/in/parkryan0128) · [GitHub](https://github.com/Parkryan0128)
